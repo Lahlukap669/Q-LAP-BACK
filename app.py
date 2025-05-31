@@ -1,10 +1,12 @@
 from flask import Flask, request, jsonify, g
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_bcrypt import Bcrypt  # ← ADD THIS BACK
 from flask_restx import Api, Resource, fields, Namespace
-from flask_cors import CORS  # ADD THIS LINE
+from flask_cors import CORS
 from dotenv import load_dotenv
 from datetime import timedelta
 import os
+
 from auth import UserManager, TrainerManager
 from decorators import role_required, ADMIN, ATHLETE, TRAINER
 from utils import create_json_response, sanitize_input, log_with_unicode
@@ -14,8 +16,8 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ADD CORS CONFIGURATION HERE
-CORS(app, origins=['http://localhost:5173'], 
+# Add CORS configuration
+CORS(app, origins=['http://localhost:5173'],
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
      allow_headers=['Content-Type', 'Authorization'])
 
@@ -23,11 +25,11 @@ CORS(app, origins=['http://localhost:5173'],
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
-app.config['JSON_AS_ASCII'] = False # Enable Unicode in JSON responses
+app.config['JSON_AS_ASCII'] = False
 
-# Initialize extensions (REMOVED BCRYPT)
+# Initialize extensions
 jwt = JWTManager(app)
-
+bcrypt = Bcrypt(app)
 # Setup Swagger API documentation
 api = Api(
     app,

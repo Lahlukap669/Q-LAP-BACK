@@ -1,13 +1,16 @@
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from flask_bcrypt import Bcrypt
 from database import db_manager
 from utils import format_user_data, sanitize_input, log_with_unicode
 import oracledb
 from datetime import timedelta
 
+bcrypt = Bcrypt()
+
 class UserManager:
     @staticmethod
     def register_user(first_name, last_name, phone_number, email, password, role):
-        """Register a new user using Oracle stored procedure"""
+        """Register a new user with bcrypt password hashing"""
         try:
             # Sanitize inputs while preserving Slovenian characters
             first_name = sanitize_input(first_name)
@@ -15,20 +18,34 @@ class UserManager:
             phone_number = sanitize_input(phone_number)
             email = sanitize_input(email.lower())
             
-            # Call Oracle stored procedure - NO password hashing in Python
+            # Hash password with bcrypt in Python
+            hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+            
+            # Check if email already exists
+            existing_user = UserManager.get_user_by_email(email)
+            if existing_user:
+                raise Exception("Uporabnik s tem e-poštnim naslovom že obstaja")
+            
+            # Insert user directly with SQL (not stored procedure)
+            query = """
+                INSERT INTO users (first_name, last_name, phone_number, email, password, role)
+                VALUES (:1, :2, :3, :4, :5, :6)
+                RETURNING id INTO :7
+            """
+            
             connection = db_manager.get_connection()
             cursor = connection.cursor()
             
             # Create output variable for returned user ID
             user_id_var = cursor.var(oracledb.NUMBER)
             
-            # Call the stored procedure
-            cursor.callproc('PKG_USER_MANAGEMENT.register_user', [
+            cursor.execute(query, [
                 first_name, last_name, phone_number, 
-                email, password, role, user_id_var
+                email, hashed_password, role, user_id_var
             ])
             
             user_id = user_id_var.getvalue()
+            connection.commit()
             
             cursor.close()
             connection.close()
@@ -36,98 +53,87 @@ class UserManager:
             log_with_unicode(f"✓ Uporabnik uspešno registriran - ID: {user_id}")
             return user_id
                 
-        except oracledb.DatabaseError as e:
-            error_obj, = e.args
-            log_with_unicode(f"✗ Napaka pri registraciji: {error_obj.message}")
-            
-            # Handle specific Oracle errors
-            if "ORA-20001" in str(e):
-                raise Exception("Vsa polja so obvezna za registracijo")
-            elif "ORA-20002" in str(e):
-                raise Exception("Uporabnik s tem e-poštnim naslovom že obstaja")
-            elif "ORA-20003" in str(e):
-                raise Exception("Neveljavna vloga. Uporabite 1 za športnika, 2 za trenerja")
-            else:
-                raise Exception("Napaka pri registraciji uporabnika")
         except Exception as e:
-            log_with_unicode(f"✗ Splošna napaka pri registraciji: {e}")
+            log_with_unicode(f"✗ Napaka pri registraciji: {e}")
             raise
 
     @staticmethod
     def login_user(email, password):
-        """Authenticate user using Oracle stored procedure"""
+        """Authenticate user using bcrypt password verification"""
         try:
             email = sanitize_input(email.lower())
             
-            # Call Oracle login function - NO password verification in Python
-            connection = db_manager.get_connection()
-            cursor = connection.cursor()
-            
-            # Call the login function
-            user_id = cursor.callfunc('PKG_USER_MANAGEMENT.login', oracledb.NUMBER, [email, password])
-            
-            if user_id is None:
-                log_with_unicode(f"✗ Neuspešna prijava: {email}")
-                cursor.close()
-                connection.close()
-                return None
-            
-            # Get user details using the stored procedure
-            user_cursor = cursor.callfunc('PKG_USER_MANAGEMENT.get_user_details', oracledb.CURSOR, [user_id])
-            
-            user_data = user_cursor.fetchone()
-            user_cursor.close()
+            # Get user data including password hash
+            user_data = UserManager.get_user_by_email(email)
             
             if not user_data:
-                log_with_unicode(f"✗ Uporabnik ni najden po prijavi: {user_id}")
-                cursor.close()
-                connection.close()
+                log_with_unicode(f"✗ Uporabnik ni najden: {email}")
                 return None
             
-            cursor.close()
-            connection.close()
-            
-            log_with_unicode(f"✓ Uspešna prijava: {email}")
-            
-            # Format user data with Unicode handling
-            formatted_user = format_user_data({
-                'id': user_data[0],           # id
-                'first_name': user_data[1],   # first_name
-                'last_name': user_data[2],    # last_name
-                'phone_number': user_data[3], # phone_number
-                'email': user_data[4],        # email
-                'role': user_data[5]          # role
-            })
-            
-            return formatted_user
+            # Verify password using bcrypt
+            if bcrypt.check_password_hash(user_data['PASSWORD'], password):
+                log_with_unicode(f"✓ Uspešna prijava: {email}")
+                
+                # Format user data (exclude password from response)
+                formatted_user = format_user_data({
+                    'id': user_data['ID'],
+                    'first_name': user_data['FIRST_NAME'],
+                    'last_name': user_data['LAST_NAME'],
+                    'phone_number': user_data['PHONE_NUMBER'],
+                    'email': user_data['EMAIL'],
+                    'role': user_data['ROLE']
+                })
+                
+                return formatted_user
+            else:
+                log_with_unicode(f"✗ Napačno geslo: {email}")
+                return None
                 
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri prijavi: {e}")
             raise
 
     @staticmethod
-    def get_user_by_id(user_id):
-        """Get user details by ID using Oracle stored procedure"""
+    def get_user_by_email(email):
+        """Get user by email including password hash for authentication"""
         try:
-            connection = db_manager.get_connection()
-            cursor = connection.cursor()
+            query = """
+                SELECT id, first_name, last_name, phone_number, email, password, role 
+                FROM users 
+                WHERE LOWER(email) = LOWER(:1)
+            """
             
-            # Call the stored procedure to get user details
-            user_cursor = cursor.callfunc('PKG_USER_MANAGEMENT.get_user_details', oracledb.CURSOR, [user_id])
+            result = db_manager.execute_query(query, [email])
             
-            user_data = user_cursor.fetchone()
-            user_cursor.close()
-            cursor.close()
-            connection.close()
+            if result:
+                return result[0]  # Return first (and should be only) result
+            return None
+                
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju uporabnika po e-pošti {email}: {e}")
+            raise
+
+    @staticmethod
+    def get_user_by_id(user_id):
+        """Get user details by ID (exclude password)"""
+        try:
+            query = """
+                SELECT id, first_name, last_name, phone_number, email, role 
+                FROM users 
+                WHERE id = :1
+            """
             
-            if user_data:
+            result = db_manager.execute_query(query, [user_id])
+            
+            if result:
+                user_data = result[0]
                 formatted_user = format_user_data({
-                    'id': user_data[0],           # id
-                    'first_name': user_data[1],   # first_name
-                    'last_name': user_data[2],    # last_name
-                    'phone_number': user_data[3], # phone_number
-                    'email': user_data[4],        # email
-                    'role': user_data[5]          # role
+                    'id': user_data['ID'],
+                    'first_name': user_data['FIRST_NAME'],
+                    'last_name': user_data['LAST_NAME'],
+                    'phone_number': user_data['PHONE_NUMBER'],
+                    'email': user_data['EMAIL'],
+                    'role': user_data['ROLE']
                 })
                 return formatted_user
             return None
@@ -138,7 +144,7 @@ class UserManager:
 
     @staticmethod
     def update_user(user_id, update_data):
-        """Update user data using Oracle stored procedure (basic info only)"""
+        """Update user data (excluding password)"""
         try:
             # Sanitize inputs
             sanitized_data = {}
@@ -148,86 +154,82 @@ class UserManager:
                 else:
                     sanitized_data[key] = value
             
-            connection = db_manager.get_connection()
-            cursor = connection.cursor()
+            # Build dynamic update query
+            set_clauses = []
+            params = []
             
-            # Use the basic info update version (4 parameters)
-            if all(key in sanitized_data for key in ['first_name', 'last_name', 'phone_number', 'email']):
-                cursor.callproc('PKG_USER_MANAGEMENT.update_user', [
-                    user_id,
-                    sanitized_data['first_name'],
-                    sanitized_data['last_name'],
-                    sanitized_data['phone_number'],
-                    sanitized_data['email']
-                ])
-                log_with_unicode(f"✓ Osnovni podatki uporabnika {user_id} uspešno posodobljeni")
+            for key, value in sanitized_data.items():
+                if key in ['first_name', 'last_name', 'phone_number', 'email']:
+                    set_clauses.append(f"{key} = :{len(params) + 1}")
+                    params.append(value)
+            
+            if not set_clauses:
+                raise Exception("Ni podatkov za posodobitev")
+            
+            # Check if email already exists for another user
+            if 'email' in sanitized_data:
+                existing_user = UserManager.get_user_by_email(sanitized_data['email'])
+                if existing_user and existing_user['ID'] != user_id:
+                    raise Exception("E-poštni naslov že obstaja za drugega uporabnika")
+            
+            # Add user_id as last parameter
+            params.append(user_id)
+            
+            query = f"""
+                UPDATE users 
+                SET {', '.join(set_clauses)}
+                WHERE id = :{len(params)}
+            """
+            
+            rows_affected = db_manager.execute_dml(query, params)
+            
+            if rows_affected > 0:
+                log_with_unicode(f"✓ Uporabnik {user_id} uspešno posodobljen")
+                return True
             else:
-                raise Exception("Manjkajo obvezni podatki za posodobitev")
-            
-            cursor.close()
-            connection.close()
-            return True
+                log_with_unicode(f"✗ Uporabnik {user_id} ni najden")
+                return False
                 
-        except oracledb.DatabaseError as e:
-            error_obj, = e.args
-            log_with_unicode(f"✗ Napaka pri posodabljanju uporabnika {user_id}: {error_obj.message}")
-            
-            # Handle specific Oracle errors
-            if "ORA-20002" in str(e):
-                raise Exception("E-poštni naslov že obstaja za drugega uporabnika")
-            elif "ORA-20004" in str(e):
-                raise Exception("Uporabnik ni najden")
-            else:
-                raise Exception("Napaka pri posodabljanju podatkov")
         except Exception as e:
-            log_with_unicode(f"✗ Splošna napaka pri posodabljanju uporabnika {user_id}: {e}")
+            log_with_unicode(f"✗ Napaka pri posodabljanju uporabnika {user_id}: {e}")
             raise
 
     @staticmethod
     def update_user_password(user_id, new_password):
-        """Update user password using Oracle stored procedure"""
+        """Update user password with bcrypt hashing"""
         try:
-            connection = db_manager.get_connection()
-            cursor = connection.cursor()
-            
-            # Use the password-only update version (2 parameters)
-            cursor.callproc('PKG_USER_MANAGEMENT.update_user', [user_id, new_password])
-            
-            cursor.close()
-            connection.close()
-            
-            log_with_unicode(f"✓ Geslo uporabnika {user_id} uspešno posodobljeno")
-            return True
-                
-        except oracledb.DatabaseError as e:
-            error_obj, = e.args
-            log_with_unicode(f"✗ Napaka pri posodabljanju gesla {user_id}: {error_obj.message}")
-            
-            # Handle specific Oracle errors
-            if "ORA-20004" in str(e):
-                raise Exception("Uporabnik ni najden")
-            elif "ORA-20005" in str(e):
+            # Validate password length
+            if len(new_password) < 6:
                 raise Exception("Geslo mora imeti vsaj 6 znakov")
+            
+            # Hash new password
+            hashed_password = bcrypt.generate_password_hash(new_password).decode('utf-8')
+            
+            query = """
+                UPDATE users 
+                SET password = :1
+                WHERE id = :2
+            """
+            
+            rows_affected = db_manager.execute_dml(query, [hashed_password, user_id])
+            
+            if rows_affected > 0:
+                log_with_unicode(f"✓ Geslo uporabnika {user_id} uspešno posodobljeno")
+                return True
             else:
-                raise Exception("Napaka pri posodabljanju gesla")
+                log_with_unicode(f"✗ Uporabnik {user_id} ni najden")
+                return False
+                
         except Exception as e:
-            log_with_unicode(f"✗ Splošna napaka pri posodabljanju gesla {user_id}: {e}")
+            log_with_unicode(f"✗ Napaka pri posodabljanju gesla {user_id}: {e}")
             raise
 
     @staticmethod
     def check_email_exists(email):
-        """Check if email exists using Oracle stored procedure"""
+        """Check if email exists"""
         try:
-            connection = db_manager.get_connection()
-            cursor = connection.cursor()
-            
-            # Call the email_exists function
-            exists = cursor.callfunc('PKG_USER_MANAGEMENT.email_exists', oracledb.BOOLEAN, [email])
-            
-            cursor.close()
-            connection.close()
-            
-            return exists
+            user = UserManager.get_user_by_email(email)
+            return user is not None
                 
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri preverjanju e-pošte: {e}")
@@ -235,25 +237,16 @@ class UserManager:
 
     @staticmethod
     def check_user_exists(user_id):
-        """Check if user exists using Oracle stored procedure"""
+        """Check if user exists"""
         try:
-            connection = db_manager.get_connection()
-            cursor = connection.cursor()
-            
-            # Call the user_exists function
-            exists = cursor.callfunc('PKG_USER_MANAGEMENT.user_exists', oracledb.BOOLEAN, [user_id])
-            
-            cursor.close()
-            connection.close()
-            
-            return exists
+            user = UserManager.get_user_by_id(user_id)
+            return user is not None
                 
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri preverjanju uporabnika: {e}")
             return False
 
-
-
+# Keep TrainerManager as is - it doesn't need password handling
 class TrainerManager:
     @staticmethod
     def get_trainer_periodizations(trainer_id):
@@ -264,7 +257,7 @@ class TrainerManager:
             
             # Call the cursor function (not the pipelined function)
             periodizations_cursor = cursor.callfunc(
-                'PKG_INFORMATION_VIEW.get_periodizations_cursor',  # ← FIXED
+                'PKG_INFORMATION_VIEW.get_periodizations_cursor',
                 oracledb.CURSOR, 
                 [trainer_id]
             )
