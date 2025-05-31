@@ -251,3 +251,40 @@ class UserManager:
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri preverjanju uporabnika: {e}")
             return False
+
+
+
+class TrainerManager:
+    @staticmethod
+    def get_trainer_periodizations(trainer_id):
+        """Get all periodizations for a trainer using Oracle cursor function"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # Call the cursor function (not the pipelined function)
+            periodizations_cursor = cursor.callfunc(
+                'PKG_INFORMATION_VIEW.get_periodizations_cursor',  # ← FIXED
+                oracledb.CURSOR, 
+                [trainer_id]
+            )
+            
+            # Get column names from the cursor description
+            columns = [col[0] for col in periodizations_cursor.description]
+            rows = periodizations_cursor.fetchall()
+            
+            # Format results with Unicode handling
+            from utils import format_database_results
+            result = format_database_results(rows, columns)
+            
+            periodizations_cursor.close()
+            cursor.close()
+            connection.close()
+            
+            log_with_unicode(f"✓ Pridobljenih {len(result)} periodizacij za trenerja {trainer_id}")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju periodizacij za trenerja {trainer_id}: {e}")
+            log_with_unicode(f"✗ Detailed error: {str(e)}")
+            raise Exception(f"Napaka pri pridobivanju periodizacij: {str(e)}")

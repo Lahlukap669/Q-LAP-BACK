@@ -11,7 +11,7 @@ def role_required(*allowed_roles):
         @jwt_required()
         def decorated_function(*args, **kwargs):
             try:
-                current_user_id = get_jwt_identity()
+                current_user_id = int(get_jwt_identity())
                 user = UserManager.get_user_by_id(current_user_id)
                 
                 if not user:

@@ -5,7 +5,7 @@ from flask_cors import CORS  # ADD THIS LINE
 from dotenv import load_dotenv
 from datetime import timedelta
 import os
-from auth import UserManager
+from auth import UserManager, TrainerManager
 from decorators import role_required, ADMIN, ATHLETE, TRAINER
 from utils import create_json_response, sanitize_input, log_with_unicode
 
@@ -73,6 +73,21 @@ user_update_model = api.model('PosodobitveniPodatki', {
 password_update_model = api.model('PosodobitveniGeslo', {
     'new_password': fields.String(required=True, description='Novo geslo (min 6 znakov)', example='NovoVarnoGeslo123!')
 })
+
+# Periodization response model for Swagger
+periodization_response_model = api.model('PeriodizacijaOdgovor', {
+    'PERIODIZATION_ID': fields.Integer(description='ID periodizacije', example=1),
+    'PERIODIZATION_NAME': fields.String(description='Ime periodizacije', example='Priprava na sezono 2025'),
+    'ATHLETE_NAME': fields.String(description='Ime športnika', example='Janez Novak'),
+    'DATE_CREATED': fields.String(description='Datum nastanka', example='2025-01-15')
+})
+
+periodizations_list_model = api.model('SeznamPeriodizacij', {
+    'message': fields.String(description='Sporočilo', example='Periodizacije uspešno pridobljene'),
+    'periodizations': fields.List(fields.Nested(periodization_response_model), description='Seznam periodizacij'),
+    'count': fields.Integer(description='Število periodizacij', example=5)
+})
+
 
 # JWT Authorization
 authorizations = {
@@ -195,10 +210,12 @@ class UserLogin(Resource):
                 }, 401)
             
             # Create JWT token
+            # FIXED CODE - Convert ID to string:
             access_token = create_access_token(
-                identity=user['id'],
+                identity=str(user['id']),  # Convert to string
                 additional_claims={'role': user['role']}
             )
+
             
             return create_json_response(app, {
                 'message': 'Uspešna prijava',
@@ -218,7 +235,7 @@ class UserProfile(Resource):
     def get(self):
         """Pridobi profil trenutnega uporabnika"""
         try:
-            current_user_id = get_jwt_identity()
+            current_user_id = int(get_jwt_identity())
             user = UserManager.get_user_by_id(current_user_id)
             
             if not user:
@@ -238,7 +255,7 @@ class UserProfileUpdate(Resource):
     def put(self):
         """Posodobi profil trenutnega uporabnika"""
         try:
-            current_user_id = get_jwt_identity()
+            current_user_id = int(get_jwt_identity())
             data = request.get_json()
             
             if not data:
@@ -269,7 +286,7 @@ class UserPasswordUpdate(Resource):
     def put(self):
         """Posodobi geslo trenutnega uporabnika"""
         try:
-            current_user_id = get_jwt_identity()
+            current_user_id = int(get_jwt_identity())
             data = request.get_json()
             
             if not data.get('new_password'):
@@ -292,6 +309,77 @@ class UserPasswordUpdate(Resource):
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri posodabljanju gesla: {e}")
             return create_json_response(app, {'message': str(e)}, 500)
+
+
+
+@api.route('/debug/token')
+class DebugToken(Resource):
+    def post(self):
+        """Debug endpoint to check token parsing"""
+        try:
+            # Get token from Authorization header manually
+            auth_header = request.headers.get('Authorization')
+            
+            log_with_unicode(f"🔍 Raw Authorization header: {auth_header}")
+            
+            if not auth_header:
+                return create_json_response(app, {'message': 'No Authorization header'}, 400)
+            
+            if not auth_header.startswith('Bearer '):
+                return create_json_response(app, {'message': 'Invalid Authorization format'}, 400)
+            
+            token = auth_header.split(' ')[1]
+            log_with_unicode(f"🔍 Extracted token: {token[:50]}...")
+            
+            # Try to decode manually
+            from flask_jwt_extended import decode_token
+            decoded = decode_token(token)
+            log_with_unicode(f"🔍 Decoded token: {decoded}")
+            
+            return create_json_response(app, {
+                'message': 'Token is valid',
+                'decoded': decoded
+            }, 200)
+            
+        except Exception as e:
+            log_with_unicode(f"🔍 Token debug error: {e}")
+            return create_json_response(app, {'message': f'Debug error: {str(e)}'}, 500)
+
+
+#Trainer endpoints
+@user_ns.route('/trainer/periodizations')
+class TrainerPeriodizations(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Periodizacije uspešno pridobljene', periodizations_list_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Trener ni najden')
+    @role_required(TRAINER)
+    def get(self):
+        """Pridobi vse periodizacije za trenutnega trenerja"""
+        try:
+            current_user_id = int(get_jwt_identity())
+            
+            # Verify user exists and is a trainer
+            user = UserManager.get_user_by_id(current_user_id)
+            if not user:
+                return create_json_response(app, {'message': 'Trener ni najden'}, 404)
+            
+            # Get trainer's periodizations
+            periodizations = TrainerManager.get_trainer_periodizations(current_user_id)
+            
+            return create_json_response(app, {
+                'message': 'Periodizacije uspešno pridobljene',
+                'periodizations': periodizations,
+                'count': len(periodizations)
+            }, 200)
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju periodizacij: {e}")
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju periodizacij'
+            }, 500)
+
 
 # Admin endpoints
 @admin_ns.route('/users')
