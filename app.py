@@ -90,6 +90,33 @@ periodizations_list_model = api.model('SeznamPeriodizacij', {
     'count': fields.Integer(description='Število periodizacij', example=5)
 })
 
+create_periodization_model = api.model('UstvariPeriodizacijo', {
+    'athlete_id': fields.Integer(required=True, description='ID športnika', example=1),
+    'difficulty': fields.Integer(required=True, description='Težavnost (1-7)', example=5),
+    'competition_date': fields.String(required=True, description='Datum tekmovanja (YYYY-MM-DD)', example='2025-08-15'),
+    'mesocycle_lengths': fields.String(required=True, description='Dolžine mezociklov (ločeno z vejico)', example='4,6,4'),
+    'method_ids': fields.String(required=True, description='ID metod po mezociklih (ločeno s | in ,)', example='49,47,48|47,48,49|48,49,47'),
+    'periodization_name': fields.String(required=True, description='Ime periodizacije', example='Summer Competition Plan')
+})
+
+create_periodization_response_model = api.model('UstvariPeriodizacijoOdgovor', {
+    'message': fields.String(description='Sporočilo o uspešnem ustvarjanju', example='Periodizacija uspešno ustvarjena')
+})
+
+# Method models
+method_response_model = api.model('MetodaOdgovor', {
+    'id': fields.Integer(description='ID metode', example=1),
+    'method_name': fields.String(description='Ime metode', example='Aerobic Base'),
+    'method_group': fields.String(description='Skupina metode', example='Endurance'),
+    'description': fields.String(description='Opis metode', example='Low intensity aerobic training for base building')
+})
+
+methods_list_model = api.model('SeznamMetod', {
+    'message': fields.String(description='Sporočilo', example='Metode uspešno pridobljene'),
+    'methods': fields.List(fields.Nested(method_response_model), description='Seznam metod treniranja'),
+    'count': fields.Integer(description='Število metod', example=15)
+})
+
 # Athlete models
 athlete_response_model = api.model('SportnikOdgovor', {
     'id': fields.Integer(description='ID športnika', example=5),
@@ -540,6 +567,114 @@ class TrainerAddAthlete(Resource):
                     'message': 'Napaka pri dodajanju športnika'
                 }, 500)
 
+@user_ns.route('/trainer/create-periodization')
+class TrainerCreatePeriodization(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(create_periodization_model, validate=True)
+    @auth_ns.response(201, 'Periodizacija uspešno ustvarjena', create_periodization_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Trener ali športnik ni najden')
+    @role_required(TRAINER)
+    def post(self):
+        """Ustvari novo periodizacijo za športnika"""
+        try:
+            current_trainer_id = int(get_jwt_identity())
+            data = request.get_json()
+            
+            # Validate required fields
+            required_fields = ['athlete_id', 'difficulty', 'competition_date', 'mesocycle_lengths', 'method_ids', 'periodization_name']
+            missing_fields = [field for field in required_fields if field not in data or data[field] is None]
+            
+            if missing_fields:
+                return create_json_response(app, {
+                    'message': f'Manjkajo obvezna polja: {", ".join(missing_fields)}'
+                }, 400)
+            
+            # Extract and validate parameters
+            athlete_id = data['athlete_id']
+            difficulty = data['difficulty']
+            competition_date = data['competition_date']
+            mesocycle_lengths = data['mesocycle_lengths']
+            method_ids = data['method_ids']
+            periodization_name = data['periodization_name']
+            
+            # Basic validation
+            if not isinstance(athlete_id, int) or athlete_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID športnika mora biti pozitivno celo število'
+                }, 400)
+            
+            if not isinstance(difficulty, int) or difficulty < 1 or difficulty > 7:
+                return create_json_response(app, {
+                    'message': 'Težavnost mora biti med 1 in 7'
+                }, 400)
+            
+            # Validate date format (basic check)
+            if not competition_date or len(competition_date) != 10:
+                return create_json_response(app, {
+                    'message': 'Datum mora biti v formatu YYYY-MM-DD'
+                }, 400)
+            
+            # Verify trainer exists
+            trainer = UserManager.get_user_by_id(current_trainer_id)
+            if not trainer:
+                return create_json_response(app, {'message': 'Trener ni najden'}, 404)
+            
+            # Create periodization
+            message = TrainerManager.create_periodization(
+                athlete_id=athlete_id,
+                trainer_id=current_trainer_id,
+                difficulty=difficulty,
+                competition_date=competition_date,
+                mesocycle_lengths=mesocycle_lengths,
+                method_ids=method_ids,
+                periodization_name=periodization_name
+            )
+            
+            return create_json_response(app, {
+                'message': message
+            }, 201)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri ustvarjanju periodizacije: {error_message}")
+            
+            # Handle specific Oracle errors
+            if "ORA-" in error_message:
+                return create_json_response(app, {
+                    'message': 'Napaka v bazi podatkov pri ustvarjanju periodizacije'
+                }, 500)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri ustvarjanju periodizacije'
+                }, 500)
+
+@user_ns.route('/trainer/methods')
+class TrainerMethods(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Metode uspešno pridobljene', methods_list_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @role_required(TRAINER)
+    def get(self):
+        """Pridobi vse razpoložljive metode treniranja"""
+        try:
+            # Get all training methods
+            methods = TrainerManager.get_methods()
+            
+            return create_json_response(app, {
+                'message': 'Metode uspešno pridobljene',
+                'methods': methods,
+                'count': len(methods)
+            }, 200)
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju metod: {e}")
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju metod'
+            }, 500)
 
 
 # Admin endpoints

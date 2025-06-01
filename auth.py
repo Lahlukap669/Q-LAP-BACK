@@ -417,3 +417,79 @@ class TrainerManager:
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri dodajanju športnika {athlete_id} trenerju {trainer_id}: {e}")
             raise
+    
+    @staticmethod
+    def create_periodization(athlete_id, trainer_id, difficulty, competition_date, mesocycle_lengths, method_ids, periodization_name):
+        """Create a new periodization using Oracle stored procedure"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # Prepare PL/SQL block to call the stored procedure
+            plsql_block = """
+            BEGIN
+                PKG_PERIODIZATION_BUILDER.create_periodization(
+                    p_athlete_id => :athlete_id,
+                    p_trainer_id => :trainer_id,
+                    p_difficulty => :difficulty,
+                    p_competition_date => TO_DATE(:competition_date, 'YYYY-MM-DD'),
+                    p_mesocycle_lengths => :mesocycle_lengths,
+                    p_method_ids => :method_ids,
+                    p_periodization_name => :periodization_name
+                );
+            END;
+            """
+            
+            # Execute the PL/SQL block
+            cursor.execute(plsql_block, {
+                'athlete_id': athlete_id,
+                'trainer_id': trainer_id,
+                'difficulty': difficulty,
+                'competition_date': competition_date,
+                'mesocycle_lengths': mesocycle_lengths,
+                'method_ids': method_ids,
+                'periodization_name': periodization_name
+            })
+            
+            connection.commit()
+            cursor.close()
+            connection.close()
+            
+            success_message = f"Periodizacija '{periodization_name}' uspešno ustvarjena za športnika {athlete_id}"
+            log_with_unicode(f"✓ {success_message}")
+            return success_message
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri ustvarjanju periodizacije: {e}")
+            raise Exception(f"Napaka pri ustvarjanju periodizacije: {str(e)}")
+
+    @staticmethod
+    def get_methods():
+        """Get all available training methods"""
+        try:
+            query = """
+                SELECT id, method_name, method_group, description
+                FROM methods
+                ORDER BY id
+            """
+            
+            result = db_manager.execute_query(query)
+            
+            # Format results with Unicode handling
+            from utils import format_user_data
+            formatted_methods = []
+            for method in result:
+                formatted_method = format_user_data({
+                    'id': method['ID'],
+                    'method_name': method['METHOD_NAME'],
+                    'method_group': method['METHOD_GROUP'],
+                    'description': method['DESCRIPTION']
+                })
+                formatted_methods.append(formatted_method)
+            
+            log_with_unicode(f"✓ Pridobljenih {len(formatted_methods)} metod treniranja")
+            return formatted_methods
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju metod: {e}")
+            raise Exception(f"Napaka pri pridobivanju metod: {str(e)}")
