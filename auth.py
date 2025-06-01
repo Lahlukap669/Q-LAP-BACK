@@ -246,6 +246,194 @@ class UserManager:
             log_with_unicode(f"✗ Napaka pri preverjanju uporabnika: {e}")
             return False
 
+
+
+
+class PeriodizationManager:
+    @staticmethod
+    def get_periodization_info(periodization_id):
+        """Get detailed periodization information including mesocycles and microcycles data"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # Get basic periodization info
+            periodization_query = """
+                SELECT 
+                    id,
+                    periodization_name,
+                    CAST(date_from AS DATE) as start_date,
+                    CAST(date_to AS DATE) as end_date
+                FROM periodizations
+                WHERE id = :1
+            """
+            
+            cursor.execute(periodization_query, [periodization_id])
+            periodization_data = cursor.fetchone()
+            
+            if not periodization_data:
+                raise Exception(f"Periodizacija z ID {periodization_id} ne obstaja")
+            
+            # Calculate duration in weeks
+            start_date = periodization_data[2]
+            end_date = periodization_data[3]
+            duration_weeks = round((end_date - start_date).days / 7, 1)
+            
+            # Get mesocycles data
+            mesocycles_query = """
+                SELECT id, number_of_microcycles
+                FROM mesocycles
+                WHERE periodization_id = :1
+                ORDER BY id ASC
+            """
+            
+            cursor.execute(mesocycles_query, [periodization_id])
+            mesocycles_data = cursor.fetchall()
+            
+            mesocycles = []
+            for meso in mesocycles_data:
+                mesocycle_id = meso[0]
+                number_of_microcycles = meso[1]
+                
+                # Get microcycles for this mesocycle with active_rest info
+                microcycles_query = """
+                    SELECT id, first_micro_start_date, 
+                           CASE WHEN active_rest IS NULL THEN 0 ELSE active_rest END as active_rest
+                    FROM microcycles
+                    WHERE mesocycle_id = :1
+                    ORDER BY id ASC
+                """
+                
+                cursor.execute(microcycles_query, [mesocycle_id])
+                microcycles_data = cursor.fetchall()
+                
+                microcycles = []
+                for micro in microcycles_data:
+                    microcycle_obj = {
+                        'id': micro[0],
+                        'start_date': micro[1].strftime('%Y-%m-%d') if micro[1] else None,
+                        'active_rest': bool(micro[2])  # Convert to boolean
+                    }
+                    microcycles.append(microcycle_obj)
+                
+                # Get motor abilities for this mesocycle
+                motor_abilities_query = """
+                    SELECT DISTINCT ma.motor_ability
+                    FROM motor_abilities ma
+                    JOIN methods m ON ma.id = m.motor_ability_id
+                    JOIN exercises e ON m.id = e.method_id
+                    JOIN exercises_microcycles em ON e.id = em.exercise_id
+                    JOIN microcycles mc ON em.microcycle_id = mc.id
+                    WHERE mc.mesocycle_id = :1
+                    ORDER BY ma.motor_ability
+                """
+                
+                cursor.execute(motor_abilities_query, [mesocycle_id])
+                motor_abilities = [row[0] for row in cursor.fetchall()]
+                
+                # Get training methods for this mesocycle
+                methods_query = """
+                    SELECT DISTINCT m.method_name
+                    FROM methods m
+                    JOIN exercises e ON m.id = e.method_id
+                    JOIN exercises_microcycles em ON e.id = em.exercise_id
+                    JOIN microcycles mc ON em.microcycle_id = mc.id
+                    WHERE mc.mesocycle_id = :1
+                    ORDER BY m.method_name
+                """
+                
+                cursor.execute(methods_query, [mesocycle_id])
+                training_methods = [row[0] for row in cursor.fetchall()]
+                
+                # Get method groups for this mesocycle
+                method_groups_query = """
+                    SELECT DISTINCT m.method_group
+                    FROM methods m
+                    JOIN exercises e ON m.id = e.method_id
+                    JOIN exercises_microcycles em ON e.id = em.exercise_id
+                    JOIN microcycles mc ON em.microcycle_id = mc.id
+                    WHERE mc.mesocycle_id = :1
+                    ORDER BY m.method_group
+                """
+                
+                cursor.execute(method_groups_query, [mesocycle_id])
+                method_groups = [row[0] for row in cursor.fetchall()]
+                
+                # Get most common exercises per method for this mesocycle
+                key_exercises_query = """
+                    WITH exercise_counts AS (
+                        SELECT 
+                            e.method_id,
+                            e.id AS exercise_id,
+                            e.exercise AS exercise_name,
+                            m.method_name,
+                            COUNT(*) AS usage_count,
+                            ROW_NUMBER() OVER (PARTITION BY e.method_id ORDER BY COUNT(*) DESC, e.id) AS rn
+                        FROM exercises_microcycles em
+                        JOIN exercises e ON em.exercise_id = e.id
+                        JOIN microcycles mc ON em.microcycle_id = mc.id
+                        JOIN methods m ON e.method_id = m.id
+                        WHERE mc.mesocycle_id = :1
+                        GROUP BY e.method_id, e.id, e.exercise, m.method_name
+                    )
+                    SELECT method_id, exercise_id, exercise_name, method_name, usage_count
+                    FROM exercise_counts
+                    WHERE rn = 1
+                    ORDER BY method_id
+                """
+                
+                cursor.execute(key_exercises_query, [mesocycle_id])
+                key_exercises_data = cursor.fetchall()
+                
+                key_exercises = []
+                for exercise in key_exercises_data:
+                    key_exercises.append({
+                        'method_id': exercise[0],
+                        'exercise_id': exercise[1],
+                        'exercise_name': exercise[2],
+                        'method_name': exercise[3],
+                        'usage_count': exercise[4]
+                    })
+                
+                # Build mesocycle object with microcycles included
+                mesocycle_obj = {
+                    'id': mesocycle_id,
+                    'number_of_microcycles': number_of_microcycles,
+                    'microcycles': microcycles,  # Added microcycles array
+                    'motor_abilities': motor_abilities,
+                    'training_methods': training_methods,
+                    'method_groups': method_groups,
+                    'key_exercises': key_exercises
+                }
+                
+                mesocycles.append(mesocycle_obj)
+            
+            cursor.close()
+            connection.close()
+            
+            # Build final response
+            result = {
+                'id': periodization_data[0],
+                'name': periodization_data[1],
+                'difficulty': 5,  # Default difficulty, can be enhanced later
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'duration_weeks': duration_weeks,
+                'mesocycles': mesocycles
+            }
+            
+            log_with_unicode(f"✓ Pridobljene informacije za periodizacijo {periodization_id}")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju informacij o periodizaciji {periodization_id}: {e}")
+            raise
+
+
+
+
+
+
 # Keep TrainerManager as is - it doesn't need password handling
 class TrainerManager:
     @staticmethod

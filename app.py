@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from datetime import timedelta
 import os
 
-from auth import UserManager, TrainerManager
+from auth import UserManager, TrainerManager, PeriodizationManager
 from decorators import role_required, ADMIN, ATHLETE, TRAINER
 from utils import create_json_response, sanitize_input, log_with_unicode
 
@@ -99,6 +99,47 @@ create_periodization_model = api.model('UstvariPeriodizacijo', {
     'periodization_name': fields.String(required=True, description='Ime periodizacije', example='Summer Competition Plan')
 })
 
+key_exercise_model = api.model('KljucnaVaja', {
+    'method_id': fields.Integer(description='ID metode', example=47),
+    'exercise_id': fields.Integer(description='ID vaje', example=123),
+    'exercise_name': fields.String(description='Ime vaje', example='Bench Press'),
+    'method_name': fields.String(description='Ime metode', example='Strength Training'),
+    'usage_count': fields.Integer(description='Število uporab', example=5)
+})
+microcycle_model = api.model('Mikrocikel', {
+    'id': fields.Integer(description='ID mikrocikla', example=25),
+    'start_date': fields.String(description='Datum začetka', example='2025-04-01'),
+    'active_rest': fields.Boolean(description='Ali je aktiven počitek', example=False)
+})
+mesocycle_model = api.model('Mezocikel', {
+    'id': fields.Integer(description='ID mezocikla', example=15),
+    'number_of_microcycles': fields.Integer(description='Število mikrociklov', example=4),
+    'microcycles': fields.List(fields.Nested(microcycle_model), description='Seznam mikrociklov'),  # Added this line
+    'motor_abilities': fields.List(fields.String, description='Motorične sposobnosti', example=['Strength', 'Endurance']),
+    'training_methods': fields.List(fields.String, description='Metode treniranja', example=['Method A', 'Method B']),
+    'method_groups': fields.List(fields.String, description='Skupine metod', example=['Group 1', 'Group 2']),
+    'key_exercises': fields.List(fields.Nested(key_exercise_model), description='Ključne vaje')
+})
+
+
+periodization_info_model = api.model('InformacijePeriodizacije', {
+    'id': fields.Integer(description='ID periodizacije', example=81),
+    'name': fields.String(description='Ime periodizacije', example='Summer Competition Plan'),
+    'difficulty': fields.Integer(description='Težavnost', example=5),
+    'start_date': fields.String(description='Datum začetka', example='2025-04-01'),
+    'end_date': fields.String(description='Datum konca', example='2025-08-15'),
+    'duration_weeks': fields.Float(description='Trajanje v tednih', example=14.3),
+    'mesocycles': fields.List(fields.Nested(mesocycle_model), description='Seznam mezociklov')
+})
+
+periodization_info_response_model = api.model('PeriodizacijaInformacijeOdgovor', {
+    'message': fields.String(description='Sporočilo', example='Informacije o periodizaciji uspešno pridobljene'),
+    'periodization_info': fields.Nested(periodization_info_model, description='Podrobne informacije o periodizaciji')
+})
+
+
+
+
 create_periodization_response_model = api.model('UstvariPeriodizacijoOdgovor', {
     'message': fields.String(description='Sporočilo o uspešnem ustvarjanju', example='Periodizacija uspešno ustvarjena')
 })
@@ -150,6 +191,7 @@ add_athlete_response_model = api.model('DodajSportnikaOdgovor', {
     'athlete_name': fields.String(description='Ime športnika', example='Ana Novak'),
     'trainer_id': fields.Integer(description='ID trenerja', example=2)
 })
+
 
 # ADD THIS - Error response model
 error_response_model = api.model('NapakaOdgovor', {
@@ -675,6 +717,48 @@ class TrainerMethods(Resource):
             return create_json_response(app, {
                 'message': 'Napaka pri pridobivanju metod'
             }, 500)
+
+
+# periodization info
+@api.route('/periodization-info/<int:periodization_id>')
+class PeriodizationInfo(Resource):
+    @api.doc(security='Bearer')
+    @api.response(200, 'Informacije o periodizaciji uspešno pridobljene', periodization_info_response_model)
+    @api.response(400, 'Neveljavni ID periodizacije', error_response_model)
+    @api.response(401, 'Žeton je obvezen')
+    @api.response(404, 'Periodizacija ni najdena', error_response_model)
+    @jwt_required()
+    def get(self, periodization_id):
+        """Pridobi podrobne informacije o periodizaciji (dostopno vsem uporabnikom)"""
+        try:
+            # Validate periodization_id
+            if periodization_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID periodizacije mora biti pozitivno število'
+                }, 400)
+            
+            # Get periodization info
+            from auth import PeriodizationManager
+            periodization_info = PeriodizationManager.get_periodization_info(periodization_id)
+            
+            return create_json_response(app, {
+                'message': 'Informacije o periodizaciji uspešno pridobljene',
+                'periodization_info': periodization_info
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri pridobivanju informacij o periodizaciji: {error_message}")
+            
+            if "ne obstaja" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri pridobivanju informacij o periodizaciji'
+                }, 500)
+
 
 
 # Admin endpoints
