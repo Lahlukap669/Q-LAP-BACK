@@ -76,7 +76,7 @@ password_update_model = api.model('PosodobitveniGeslo', {
     'new_password': fields.String(required=True, description='Novo geslo (min 6 znakov)', example='NovoVarnoGeslo123!')
 })
 
-# Periodization response model for Swagger
+# Periodization models
 periodization_response_model = api.model('PeriodizacijaOdgovor', {
     'PERIODIZATION_ID': fields.Integer(description='ID periodizacije', example=1),
     'PERIODIZATION_NAME': fields.String(description='Ime periodizacije', example='Priprava na sezono 2025'),
@@ -89,6 +89,46 @@ periodizations_list_model = api.model('SeznamPeriodizacij', {
     'periodizations': fields.List(fields.Nested(periodization_response_model), description='Seznam periodizacij'),
     'count': fields.Integer(description='Število periodizacij', example=5)
 })
+
+# Athlete models
+athlete_response_model = api.model('SportnikOdgovor', {
+    'id': fields.Integer(description='ID športnika', example=5),
+    'first_name': fields.String(description='Ime', example='Ana'),
+    'last_name': fields.String(description='Priimek', example='Novak'),
+    'phone_number': fields.String(description='Telefon', example='+386123456789'),
+    'email': fields.String(description='E-pošta', example='ana.novak@example.com'),
+    'role': fields.Integer(description='Vloga (1=športnik)', example=1)
+})
+
+athletes_list_model = api.model('SeznamSportnikov', {
+    'message': fields.String(description='Sporočilo', example='Športniki uspešno pridobljeni'),
+    'athletes': fields.List(fields.Nested(athlete_response_model), description='Seznam razpoložljivih športnikov'),
+    'count': fields.Integer(description='Število športnikov', example=3)
+})
+
+my_athletes_list_model = api.model('MojiSportniki', {
+    'message': fields.String(description='Sporočilo', example='Moji športniki uspešno pridobljeni'),
+    'athletes': fields.List(fields.Nested(athlete_response_model), description='Seznam dodeljenih športnikov'),
+    'count': fields.Integer(description='Število dodeljenih športnikov', example=2)
+})
+
+# Add athlete models
+add_athlete_request_model = api.model('DodajSportnika', {
+    'athlete_id': fields.Integer(required=True, description='ID športnika za dodajanje', example=5)
+})
+
+add_athlete_response_model = api.model('DodajSportnikaOdgovor', {
+    'message': fields.String(description='Sporočilo', example='Športnik uspešno dodeljen'),
+    'athlete_id': fields.Integer(description='ID športnika', example=5),
+    'athlete_name': fields.String(description='Ime športnika', example='Ana Novak'),
+    'trainer_id': fields.Integer(description='ID trenerja', example=2)
+})
+
+# ADD THIS - Error response model
+error_response_model = api.model('NapakaOdgovor', {
+    'message': fields.String(description='Sporočilo o napaki', example='Neveljavni podatki')
+})
+
 
 
 # JWT Authorization
@@ -381,6 +421,125 @@ class TrainerPeriodizations(Resource):
             return create_json_response(app, {
                 'message': 'Napaka pri pridobivanju periodizacij'
             }, 500)
+
+@user_ns.route('/trainer/search-athletes')
+class TrainerSearchAthletes(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Športniki uspešno pridobljeni', athletes_list_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @role_required(TRAINER)
+    def get(self):
+        """Poišči razpoložljive športnike (ki niso dodeljeni nobenemu trenerju)"""
+        try:
+            # Get available athletes
+            athletes = TrainerManager.search_athletes()
+            
+            return create_json_response(app, {
+                'message': 'Športniki uspešno pridobljeni',
+                'athletes': athletes,
+                'count': len(athletes)
+            }, 200)
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri iskanju športnikov: {e}")
+            return create_json_response(app, {
+                'message': 'Napaka pri iskanju športnikov'
+            }, 500)
+
+@user_ns.route('/trainer/my-athletes')
+class TrainerMyAthletes(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Moji športniki uspešno pridobljeni', my_athletes_list_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Trener ni najden')
+    @role_required(TRAINER)
+    def get(self):
+        """Pridobi vse športnike dodeljene trenutnemu trenerju"""
+        try:
+            current_user_id = int(get_jwt_identity())
+            
+            # Verify user exists and is a trainer
+            user = UserManager.get_user_by_id(current_user_id)
+            if not user:
+                return create_json_response(app, {'message': 'Trener ni najden'}, 404)
+            
+            # Get trainer's athletes
+            athletes = TrainerManager.get_my_athletes(current_user_id)
+            
+            return create_json_response(app, {
+                'message': 'Moji športniki uspešno pridobljeni',
+                'athletes': athletes,
+                'count': len(athletes)
+            }, 200)
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju mojih športnikov: {e}")
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju mojih športnikov'
+            }, 500)
+
+@user_ns.route('/trainer/add-athlete')
+class TrainerAddAthlete(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(add_athlete_request_model, validate=True)
+    @auth_ns.response(201, 'Športnik uspešno dodeljen', add_athlete_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Trener ali športnik ni najden')
+    @auth_ns.response(409, 'Športnik je že dodeljen')
+    @role_required(TRAINER)
+    def post(self):
+        """Dodeli športnika trenutnemu trenerju"""
+        try:
+            current_user_id = int(get_jwt_identity())
+            data = request.get_json()
+            
+            # Validate required fields
+            if not data.get('athlete_id'):
+                return create_json_response(app, {
+                    'message': 'ID športnika je obvezen'
+                }, 400)
+            
+            athlete_id = data['athlete_id']
+            
+            # Validate athlete_id is a positive integer
+            if not isinstance(athlete_id, int) or athlete_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID športnika mora biti pozitivno celo število'
+                }, 400)
+            
+            # Verify trainer exists
+            trainer = UserManager.get_user_by_id(current_user_id)
+            if not trainer:
+                return create_json_response(app, {'message': 'Trener ni najden'}, 404)
+            
+            # Add athlete to trainer
+            result = TrainerManager.add_athlete(current_user_id, athlete_id)
+            
+            return create_json_response(app, {
+                'message': 'Športnik uspešno dodeljen',
+                'athlete_id': result['athlete_id'],
+                'athlete_name': result['athlete_name'],
+                'trainer_id': result['trainer_id']
+            }, 201)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri dodajanju športnika: {error_message}")
+            
+            # Handle specific error cases
+            if "ne obstaja ali ni športnik" in error_message:
+                return create_json_response(app, {'message': error_message}, 404)
+            elif "že dodeljen" in error_message:
+                return create_json_response(app, {'message': error_message}, 409)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri dodajanju športnika'
+                }, 500)
+
 
 
 # Admin endpoints

@@ -281,3 +281,139 @@ class TrainerManager:
             log_with_unicode(f"✗ Napaka pri pridobivanju periodizacij za trenerja {trainer_id}: {e}")
             log_with_unicode(f"✗ Detailed error: {str(e)}")
             raise Exception(f"Napaka pri pridobivanju periodizacij: {str(e)}")
+    @staticmethod
+    def search_athletes():
+        """Get all available athletes (not assigned to any trainer)"""
+        try:
+            # Get athletes that are not yet assigned to any trainer
+            query = """
+                SELECT u.id, u.first_name, u.last_name, u.email, u.role
+                FROM users u
+                WHERE u.role = 1
+                AND NOT EXISTS (
+                    SELECT 1 FROM trainers_athletes ta 
+                    WHERE ta.athlete_id = u.id
+                )
+                ORDER BY u.last_name, u.first_name
+            """
+            
+            result = db_manager.execute_query(query)
+            
+            # Format results with Unicode handling
+            from utils import format_user_data
+            formatted_athletes = []
+            for athlete in result:
+                formatted_athlete = format_user_data({
+                    'id': athlete['ID'],
+                    'first_name': athlete['FIRST_NAME'],
+                    'last_name': athlete['LAST_NAME'],
+                    'email': athlete['EMAIL'],
+                    'role': athlete['ROLE']
+                })
+                formatted_athletes.append(formatted_athlete)
+            
+            log_with_unicode(f"✓ Najdenih {len(formatted_athletes)} razpoložljivih športnikov")
+            return formatted_athletes
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri iskanju športnikov: {e}")
+            raise Exception(f"Napaka pri iskanju športnikov: {str(e)}")
+
+    @staticmethod
+    def get_my_athletes(trainer_id):
+        """Get all athletes assigned to a specific trainer"""
+        try:
+            # Get athletes assigned to this trainer
+            query = """
+                SELECT u.id, u.first_name, u.last_name, u.phone_number, u.email, u.role
+                FROM users u
+                JOIN trainers_athletes ta ON u.id = ta.athlete_id
+                WHERE ta.trainer_id = :1
+                AND u.role = 1
+                ORDER BY u.last_name, u.first_name
+            """
+            
+            result = db_manager.execute_query(query, [trainer_id])
+            
+            # Format results with Unicode handling
+            from utils import format_user_data
+            formatted_athletes = []
+            for athlete in result:
+                formatted_athlete = format_user_data({
+                    'id': athlete['ID'],
+                    'first_name': athlete['FIRST_NAME'],
+                    'last_name': athlete['LAST_NAME'],
+                    'phone_number': athlete['PHONE_NUMBER'],
+                    'email': athlete['EMAIL'],
+                    'role': athlete['ROLE']
+                })
+                formatted_athletes.append(formatted_athlete)
+            
+            log_with_unicode(f"✓ Trener {trainer_id} ima {len(formatted_athletes)} dodeljenih športnikov")
+            return formatted_athletes
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju mojih športnikov za trenerja {trainer_id}: {e}")
+            raise Exception(f"Napaka pri pridobivanju mojih športnikov: {str(e)}")
+
+    @staticmethod
+    def add_athlete(trainer_id, athlete_id):
+        """Add an athlete to a trainer's list"""
+        try:
+            # First, verify the athlete exists and has role 1
+            athlete_query = """
+                SELECT id, first_name, last_name, role 
+                FROM users 
+                WHERE id = :1 AND role = 1
+            """
+            athlete_result = db_manager.execute_query(athlete_query, [athlete_id])
+            
+            if not athlete_result:
+                raise Exception("Športnik s tem ID-jem ne obstaja ali ni športnik")
+            
+            # Check if relationship already exists
+            existing_query = """
+                SELECT COUNT(*) as count
+                FROM trainers_athletes 
+                WHERE trainer_id = :1 AND athlete_id = :2
+            """
+            existing_result = db_manager.execute_query(existing_query, [trainer_id, athlete_id])
+            
+            if existing_result[0]['COUNT'] > 0:
+                raise Exception("Ta športnik je že dodeljen temu trenerju")
+            
+            # Check if athlete is already assigned to another trainer
+            assigned_query = """
+                SELECT t.first_name || ' ' || t.last_name as trainer_name
+                FROM trainers_athletes ta
+                JOIN users t ON ta.trainer_id = t.id
+                WHERE ta.athlete_id = :1
+            """
+            assigned_result = db_manager.execute_query(assigned_query, [athlete_id])
+            
+            if assigned_result:
+                trainer_name = assigned_result[0]['TRAINER_NAME']
+                raise Exception(f"Ta športnik je že dodeljen trenerju: {trainer_name}")
+            
+            # Insert the trainer-athlete relationship
+            insert_query = """
+                INSERT INTO trainers_athletes (trainer_id, athlete_id)
+                VALUES (:1, :2)
+            """
+            
+            rows_affected = db_manager.execute_dml(insert_query, [trainer_id, athlete_id])
+            
+            if rows_affected > 0:
+                athlete_name = f"{athlete_result[0]['FIRST_NAME']} {athlete_result[0]['LAST_NAME']}"
+                log_with_unicode(f"✓ Športnik {athlete_name} (ID: {athlete_id}) uspešno dodeljen trenerju {trainer_id}")
+                return {
+                    'athlete_id': athlete_id,
+                    'athlete_name': athlete_name,
+                    'trainer_id': trainer_id
+                }
+            else:
+                raise Exception("Napaka pri dodajanju športnika")
+                
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri dodajanju športnika {athlete_id} trenerju {trainer_id}: {e}")
+            raise
