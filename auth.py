@@ -508,6 +508,132 @@ class TrainerManager:
             log_with_unicode(f"✗ Napaka pri iskanju športnikov: {e}")
             raise Exception(f"Napaka pri iskanju športnikov: {str(e)}")
 
+
+    @staticmethod
+    def get_microcycle_info(microcycle_id, day_of_week_number):
+        """Get detailed microcycle information for a specific day"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # Get methods for the microcycle on specified day
+            methods_query = """
+                SELECT DISTINCT
+                    m.id AS method_id,
+                    m.method_name,
+                    m.method_group,
+                    m.sets,
+                    m.repetitions,
+                    m.burden_percentage_of_MVC,
+                    m.VO2MAX,
+                    m.HRPERCENTAGE,
+                    m.rest_seconds,
+                    m.duration_min,
+                    m.contraction_type,
+                    m.tempo,
+                    m.motor_ability_id,
+                    ma.motor_ability
+                FROM methods m
+                JOIN exercises e ON m.id = e.method_id
+                JOIN exercises_microcycles em ON e.id = em.exercise_id
+                JOIN motor_abilities ma ON m.motor_ability_id = ma.id
+                WHERE em.microcycle_id = :1
+                    AND em.day_of_week_number = :2
+                ORDER BY m.id
+            """
+            
+            cursor.execute(methods_query, [microcycle_id, day_of_week_number])
+            methods_data = cursor.fetchall()
+            
+            if not methods_data:
+                # Return empty structure if no data found
+                return {
+                    'microcycle_id': microcycle_id,
+                    'day_of_week_number': day_of_week_number,
+                    'methods': []
+                }
+            
+            methods = []
+            for method_data in methods_data:
+                method_id = method_data[0]
+                
+                # Get exercises for this method on the specified day
+                exercises_query = """
+                    SELECT 
+                        em.exercise_date,
+                        em.day_of_week_number,
+                        e.id AS exercise_id,
+                        e.exercise AS exercise_name,
+                        SUBSTR(e.description, 1, 4000) AS description,
+                        e.video_url,
+                        e.difficulty,
+                        em.exercise_finished,
+                        TO_CHAR(em.exercise_date, 'Day') AS day_of_week_name
+                    FROM exercises_microcycles em
+                    JOIN exercises e ON em.exercise_id = e.id
+                    WHERE em.microcycle_id = :1
+                        AND e.method_id = :2
+                        AND em.day_of_week_number = :3
+                    ORDER BY em.exercise_date, e.exercise
+                """
+                
+                cursor.execute(exercises_query, [microcycle_id, method_id, day_of_week_number])
+                exercises_data = cursor.fetchall()
+                
+                exercises = []
+                for exercise_data in exercises_data:
+                    exercise_obj = {
+                        'exercise_date': exercise_data[0].strftime('%Y-%m-%d') if exercise_data[0] else None,
+                        'day_of_week_number': exercise_data[1],
+                        'exercise_id': exercise_data[2],
+                        'exercise_name': exercise_data[3],
+                        'description': exercise_data[4],
+                        'video_url': exercise_data[5],
+                        'difficulty': exercise_data[6],
+                        'exercise_finished': bool(exercise_data[7]) if exercise_data[7] is not None else False,
+                        'day_of_week_name': exercise_data[8].strip() if exercise_data[8] else None
+                    }
+                    exercises.append(exercise_obj)
+                
+                # Build method object
+                method_obj = {
+                    'method_id': method_data[0],
+                    'method_name': method_data[1],
+                    'method_group': method_data[2],
+                    'method_parameters': {
+                        'sets': method_data[3],
+                        'repetitions': method_data[4],
+                        'burden_percentage_of_mvc': method_data[5],
+                        'vo2_max': method_data[6],
+                        'hr_percentage': method_data[7],
+                        'rest_seconds': method_data[8],
+                        'duration_min': method_data[9],
+                        'contraction_type': method_data[10],
+                        'tempo': method_data[11]
+                    },
+                    'motor_ability_id': method_data[12],
+                    'motor_ability': method_data[13],
+                    'exercises': exercises
+                }
+                
+                methods.append(method_obj)
+            
+            cursor.close()
+            connection.close()
+            
+            result = {
+                'microcycle_id': microcycle_id,
+                'day_of_week_number': day_of_week_number,
+                'methods': methods
+            }
+            
+            log_with_unicode(f"✓ Pridobljene informacije za mikrocikel {microcycle_id}, dan {day_of_week_number}")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju informacij o mikrociklu {microcycle_id}: {e}")
+            raise Exception(f"Napaka pri pridobivanju informacij o mikrociklu: {str(e)}")
+
     @staticmethod
     def get_my_athletes(trainer_id):
         """Get all athletes assigned to a specific trainer"""
@@ -654,30 +780,81 @@ class TrainerManager:
 
     @staticmethod
     def get_methods():
-        """Get all available training methods"""
+        """Get all methods grouped by motor ability and method group"""
         try:
-            query = """
-                SELECT id, method_name, method_group, description
-                FROM methods
-                ORDER BY id
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # Get motor abilities
+            motor_abilities_query = """
+                SELECT id, motor_ability 
+                FROM motor_abilities 
+                WHERE NOT motor_ability = 'Gibljivost'
+                ORDER BY
+                CASE 
+                    WHEN motor_ability = 'Moč' THEN 1
+                    WHEN motor_ability = 'Vzdržljivost' THEN 2
+                    WHEN motor_ability = 'Hitrost' THEN 3
+                    ELSE 4
+                END,
+                motor_ability
             """
+            cursor.execute(motor_abilities_query)
+            motor_abilities = cursor.fetchall()
             
-            result = db_manager.execute_query(query)
-            
-            # Format results with Unicode handling
-            from utils import format_user_data
-            formatted_methods = []
-            for method in result:
-                formatted_method = format_user_data({
-                    'id': method['ID'],
-                    'method_name': method['METHOD_NAME'],
-                    'method_group': method['METHOD_GROUP'],
-                    'description': method['DESCRIPTION']
+            result = []
+            for ma in motor_abilities:
+                motor_ability_id = ma[0]
+                motor_ability_name = ma[1]
+                
+                # Get method groups for this motor ability
+                method_groups_query = """
+                    SELECT DISTINCT method_group
+                    FROM methods
+                    WHERE motor_ability_id = :1
+                    ORDER BY method_group
+                """
+                cursor.execute(method_groups_query, [motor_ability_id])
+                method_groups = cursor.fetchall()
+                
+                method_groups_list = []
+                for mg in method_groups:
+                    method_group_name = mg[0]
+                    
+                    # Get methods for this group
+                    methods_query = """
+                        SELECT id, method_name, description
+                        FROM methods
+                        WHERE motor_ability_id = :1
+                          AND method_group = :2
+                        ORDER BY method_name
+                    """
+                    cursor.execute(methods_query, [motor_ability_id, method_group_name])
+                    methods = cursor.fetchall()
+                    
+                    methods_list = []
+                    for method in methods:
+                        methods_list.append({
+                            'id': method[0],
+                            'name': method[1],
+                            'description': method[2]
+                        })
+                    
+                    method_groups_list.append({
+                        'group_name': method_group_name,
+                        'methods': methods_list
+                    })
+                
+                result.append({
+                    'motor_ability': motor_ability_name,
+                    'method_groups': method_groups_list
                 })
-                formatted_methods.append(formatted_method)
             
-            log_with_unicode(f"✓ Pridobljenih {len(formatted_methods)} metod treniranja")
-            return formatted_methods
+            cursor.close()
+            connection.close()
+            
+            log_with_unicode(f"✓ Pridobljene metode razvrščene po motoričnih sposobnostih")
+            return result
             
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri pridobivanju metod: {e}")

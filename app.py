@@ -146,18 +146,27 @@ create_periodization_response_model = api.model('UstvariPeriodizacijoOdgovor', {
 })
 
 # Method models
-method_response_model = api.model('MetodaOdgovor', {
-    'id': fields.Integer(description='ID metode', example=1),
-    'method_name': fields.String(description='Ime metode', example='Aerobic Base'),
-    'method_group': fields.String(description='Skupina metode', example='Endurance'),
-    'description': fields.String(description='Opis metode', example='Low intensity aerobic training for base building')
+method_model = api.model('Metoda', {
+    'id': fields.Integer(description='ID metode', example=47),
+    'name': fields.String(description='Ime metode', example='Aerobic Base'),
+    'description': fields.String(description='Opis metode', example='Nizka intenzivnost za aerobno bazo')
 })
 
-methods_list_model = api.model('SeznamMetod', {
-    'message': fields.String(description='Sporočilo', example='Metode uspešno pridobljene'),
-    'methods': fields.List(fields.Nested(method_response_model), description='Seznam metod treniranja'),
-    'count': fields.Integer(description='Število metod', example=15)
+method_group_model = api.model('SkupinaMetod', {
+    'group_name': fields.String(description='Ime skupine', example='Endurance'),
+    'methods': fields.List(fields.Nested(method_model), description='Seznam metod v skupini')
 })
+
+motor_ability_model = api.model('MotoričnaSposobnost', {
+    'motor_ability': fields.String(description='Ime motorične sposobnosti', example='Strength'),
+    'method_groups': fields.List(fields.Nested(method_group_model), description='Skupine metod za to sposobnost')
+})
+
+methods_list_model = api.model('StrukturiraneMetode', {
+    'message': fields.String(description='Sporočilo', example='Metode uspešno pridobljene'),
+    'data': fields.List(fields.Nested(motor_ability_model), description='Strukturirane metode po motoričnih sposobnostih')
+})
+
 
 # Athlete models
 athlete_response_model = api.model('SportnikOdgovor', {
@@ -192,6 +201,54 @@ add_athlete_response_model = api.model('DodajSportnikaOdgovor', {
     'athlete_name': fields.String(description='Ime športnika', example='Ana Novak'),
     'trainer_id': fields.Integer(description='ID trenerja', example=2)
 })
+
+
+
+exercise_info_model = api.model('InformacijeVaje', {
+    'exercise_date': fields.String(description='Datum vaje', example='2025-04-01'),
+    'day_of_week_number': fields.Integer(description='Številka dneva v tednu', example=1),
+    'exercise_id': fields.Integer(description='ID vaje', example=123),
+    'exercise_name': fields.String(description='Ime vaje', example='Bench Press'),
+    'description': fields.String(description='Opis vaje', example='Lying on bench, press barbell upward'),
+    'video_url': fields.String(description='URL videa', example='https://example.com/video.mp4'),
+    'difficulty': fields.Integer(description='Težavnost (1-10)', example=5),
+    'exercise_finished': fields.Boolean(description='Ali je vaja končana', example=False),
+    'day_of_week_name': fields.String(description='Ime dneva v tednu', example='Monday')
+})
+
+method_parameters_model = api.model('ParametriMetode', {
+    'sets': fields.Integer(description='Število serij', example=3),
+    'repetitions': fields.Integer(description='Število ponovitev', example=10),
+    'burden_percentage_of_mvc': fields.Float(description='Odstotek maksimalne prostovoljne kontrakcije', example=75.5),
+    'vo2_max': fields.Float(description='VO2 Max', example=65.0),
+    'hr_percentage': fields.Float(description='Odstotek maksimalne srčne frekvence', example=80.0),
+    'rest_seconds': fields.Integer(description='Počitek v sekundah', example=90),
+    'duration_min': fields.Integer(description='Trajanje v minutah', example=45),
+    'contraction_type': fields.String(description='Tip kontrakcije', example='Concentric'),
+    'tempo': fields.String(description='Tempo', example='3-1-2-1')
+})
+
+method_info_model = api.model('InformacijeMetode', {
+    'method_id': fields.Integer(description='ID metode', example=47),
+    'method_name': fields.String(description='Ime metode', example='Strength Training'),
+    'method_group': fields.String(description='Skupina metode', example='Resistance'),
+    'method_parameters': fields.Nested(method_parameters_model, description='Parametri metode'),
+    'motor_ability_id': fields.Integer(description='ID motorične sposobnosti', example=1),
+    'motor_ability': fields.String(description='Motorična sposobnost', example='Strength'),
+    'exercises': fields.List(fields.Nested(exercise_info_model), description='Seznam vaj za to metodo')
+})
+
+microcycle_info_model = api.model('InformacijeMikrocikla', {
+    'microcycle_id': fields.Integer(description='ID mikrocikla', example=589),
+    'day_of_week_number': fields.Integer(description='Številka dneva v tednu (1-7)', example=1),
+    'methods': fields.List(fields.Nested(method_info_model), description='Seznam metod za ta dan')
+})
+
+microcycle_info_response_model = api.model('MikrociklInformacijeOdgovor', {
+    'message': fields.String(description='Sporočilo', example='Informacije o mikrociklu uspešno pridobljene'),
+    'microcycle_info': fields.Nested(microcycle_info_model, description='Podrobne informacije o mikrociklu')
+})
+
 
 
 # ADD THIS - Error response model
@@ -702,15 +759,14 @@ class TrainerMethods(Resource):
     @auth_ns.response(403, 'Samo trenerji imajo dostop')
     @role_required(TRAINER)
     def get(self):
-        """Pridobi vse razpoložljive metode treniranja"""
+        """Pridobi vse metode razvrščene po motoričnih sposobnostih in skupinah"""
         try:
-            # Get all training methods
-            methods = TrainerManager.get_methods()
+            # Get structured methods
+            structured_methods = TrainerManager.get_methods()
             
             return create_json_response(app, {
                 'message': 'Metode uspešno pridobljene',
-                'methods': methods,
-                'count': len(methods)
+                'data': structured_methods
             }, 200)
             
         except Exception as e:
@@ -718,6 +774,7 @@ class TrainerMethods(Resource):
             return create_json_response(app, {
                 'message': 'Napaka pri pridobivanju metod'
             }, 500)
+
 
 
 # periodization info
@@ -758,6 +815,50 @@ class PeriodizationInfo(Resource):
             else:
                 return create_json_response(app, {
                     'message': 'Napaka pri pridobivanju informacij o periodizaciji'
+                }, 500)
+
+@user_ns.route('/trainer/microcycle-info/<int:microcycle_id>/<int:day_of_week_number>')
+class TrainerMicrocycleInfo(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Informacije o mikrociklu uspešno pridobljene', microcycle_info_response_model)
+    @auth_ns.response(400, 'Neveljavni parametri', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Mikrocikel ni najden', error_response_model)
+    @role_required(TRAINER)
+    def get(self, microcycle_id, day_of_week_number):
+        """Pridobi podrobne informacije o mikrociklu za določen dan (samo trenerji)"""
+        try:
+            # Validate parameters
+            if microcycle_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID mikrocikla mora biti pozitivno število'
+                }, 400)
+            
+            if day_of_week_number < 1 or day_of_week_number > 7:
+                return create_json_response(app, {
+                    'message': 'Številka dneva v tednu mora biti med 1 in 7'
+                }, 400)
+            
+            # Get microcycle info
+            microcycle_info = TrainerManager.get_microcycle_info(microcycle_id, day_of_week_number)
+            
+            return create_json_response(app, {
+                'message': 'Informacije o mikrociklu uspešno pridobljene',
+                'microcycle_info': microcycle_info
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri pridobivanju informacij o mikrociklu: {error_message}")
+            
+            if "ne obstaja" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri pridobivanju informacij o mikrociklu'
                 }, 500)
 
 
