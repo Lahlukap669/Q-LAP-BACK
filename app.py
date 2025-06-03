@@ -78,14 +78,15 @@ password_update_model = api.model('PosodobitveniGeslo', {
 
 # Periodization models
 periodization_response_model = api.model('PeriodizacijaOdgovor', {
-    'PERIODIZATION_ID': fields.Integer(description='ID periodizacije', example=1),
-    'PERIODIZATION_NAME': fields.String(description='Ime periodizacije', example='Priprava na sezono 2025'),
+    'PERIODIZATION_ID': fields.Integer(description='ID ciklizacije', example=1),
+    'PERIODIZATION_NAME': fields.String(description='Ime ciklizacije', example='Priprava na sezono 2025'),
+    'DIFFICULTY': fields.Integer(description='Težavost ciklizacije', example=3),
     'ATHLETE_NAME': fields.String(description='Ime športnika', example='Janez Novak'),
     'DATE_CREATED': fields.String(description='Datum nastanka', example='2025-01-15')
 })
 
 periodizations_list_model = api.model('SeznamPeriodizacij', {
-    'message': fields.String(description='Sporočilo', example='Periodizacije uspešno pridobljene'),
+    'message': fields.String(description='Sporočilo', example='ciklizacije uspešno pridobljene'),
     'periodizations': fields.List(fields.Nested(periodization_response_model), description='Seznam periodizacij'),
     'count': fields.Integer(description='Število periodizacij', example=5)
 })
@@ -96,7 +97,7 @@ create_periodization_model = api.model('UstvariPeriodizacijo', {
     'competition_date': fields.String(required=True, description='Datum tekmovanja (YYYY-MM-DD)', example='2025-08-15'),
     'mesocycle_lengths': fields.String(required=True, description='Dolžine mezociklov (ločeno z vejico)', example='4,6,4'),
     'method_ids': fields.String(required=True, description='ID metod po mezociklih (ločeno s | in ,)', example='49,47,48|47,48,49|48,49,47'),
-    'periodization_name': fields.String(required=True, description='Ime periodizacije', example='Summer Competition Plan')
+    'periodization_name': fields.String(required=True, description='Ime ciklizacije', example='Summer Competition Plan')
 })
 
 key_exercise_model = api.model('KljucnaVaja', {

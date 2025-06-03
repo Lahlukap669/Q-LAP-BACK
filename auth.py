@@ -262,6 +262,7 @@ class PeriodizationManager:
                 SELECT 
                     id,
                     periodization_name,
+                    difficulty,
                     CAST(date_from AS DATE) as start_date,
                     CAST(date_to AS DATE) as end_date
                 FROM periodizations
@@ -275,8 +276,8 @@ class PeriodizationManager:
                 raise Exception(f"Periodizacija z ID {periodization_id} ne obstaja")
             
             # Calculate duration in weeks
-            start_date = periodization_data[2]
-            end_date = periodization_data[3]
+            start_date = periodization_data[3]
+            end_date = periodization_data[4]
             duration_weeks = round((end_date - start_date).days / 7, 1)
             
             # Get mesocycles data
@@ -415,7 +416,7 @@ class PeriodizationManager:
             result = {
                 'id': periodization_data[0],
                 'name': periodization_data[1],
-                'difficulty': 5,  # Default difficulty, can be enhanced later
+                'difficulty': periodization_data[2],
                 'start_date': start_date.strftime('%Y-%m-%d'),
                 'end_date': end_date.strftime('%Y-%m-%d'),
                 'duration_weeks': duration_weeks,
