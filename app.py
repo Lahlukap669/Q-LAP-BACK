@@ -138,6 +138,15 @@ periodization_info_response_model = api.model('PeriodizacijaInformacijeOdgovor',
     'periodization_info': fields.Nested(periodization_info_model, description='Podrobne informacije o periodizaciji')
 })
 
+# Add this with your existing models
+delete_periodization_model = api.model('IzbrisiPeriodizacijo', {
+    'periodization_id': fields.Integer(required=True, description='ID periodizacije za brisanje', example=199)
+})
+
+delete_periodization_response_model = api.model('IzbrisiPeriodizacijoOdgovor', {
+    'message': fields.String(description='Sporočilo o uspešnem brisanju', example='Periodizacija z ID 199 je bila uspešno izbrisana')
+})
+
 
 
 
@@ -573,6 +582,61 @@ class TrainerSearchAthletes(Resource):
             return create_json_response(app, {
                 'message': 'Napaka pri iskanju športnikov'
             }, 500)
+
+@user_ns.route('/trainer/delete-periodization')
+class TrainerDeletePeriodization(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(delete_periodization_model, validate=True)
+    @auth_ns.response(200, 'Periodizacija uspešno izbrisana', delete_periodization_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Periodizacija ni najdena', error_response_model)
+    @role_required(TRAINER)
+    def delete(self):
+        """Izbriši periodizacijo po ID-ju (samo trener lahko briše svoje periodizacije)"""
+        try:
+            current_trainer_id = int(get_jwt_identity())
+            data = request.get_json()
+            
+            # Validate input
+            if not data or not data.get('periodization_id'):
+                return create_json_response(app, {
+                    'message': 'ID periodizacije je obvezen'
+                }, 400)
+            
+            periodization_id = data['periodization_id']
+            
+            # Validate periodization_id is a positive integer
+            if not isinstance(periodization_id, int) or periodization_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID periodizacije mora biti pozitivno celo število'
+                }, 400)
+            
+            # Delete periodization
+            message = TrainerManager.delete_periodization(current_trainer_id, periodization_id)
+            
+            return create_json_response(app, {
+                'message': message
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri brisanju periodizacije: {error_message}")
+            
+            if "ne obstaja ali ni dodeljena" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            elif "ni bila najdena" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri brisanju periodizacije'
+                }, 500)
+
 
 @user_ns.route('/trainer/my-athletes')
 class TrainerMyAthletes(Resource):

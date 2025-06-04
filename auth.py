@@ -509,7 +509,46 @@ class TrainerManager:
             log_with_unicode(f"✗ Napaka pri iskanju športnikov: {e}")
             raise Exception(f"Napaka pri iskanju športnikov: {str(e)}")
 
-
+    @staticmethod
+    def delete_periodization(trainer_id, periodization_id):
+        """Delete a periodization by ID, only if trainer owns it"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # First verify that the periodization belongs to the trainer
+            check_query = """
+                SELECT COUNT(*) as count
+                FROM periodizations
+                WHERE id = :1 AND trainer_id = :2
+            """
+            print(periodization_id, trainer_id)
+            cursor.execute(check_query, [periodization_id, trainer_id])
+            result = cursor.fetchone()
+            
+            if result[0] == 0:
+                raise Exception(f"Periodizacija z ID {periodization_id} ne obstaja ali ni dodeljena temu trenerju")
+            
+            # Delete periodization (cascades will handle related data)
+            delete_query = "DELETE FROM periodizations WHERE id = :1"
+            cursor.execute(delete_query, [periodization_id])
+            
+            rows_affected = cursor.rowcount
+            connection.commit()
+            cursor.close()
+            connection.close()
+            
+            if rows_affected > 0:
+                success_message = f"Periodizacija z ID {periodization_id} je bila uspešno izbrisana"
+                log_with_unicode(f"✓ {success_message}")
+                return success_message
+            else:
+                raise Exception(f"Periodizacija z ID {periodization_id} ni bila najdena")
+                
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri brisanju periodizacije {periodization_id}: {e}")
+            raise
+    
     @staticmethod
     def get_microcycle_info(microcycle_id, day_of_week_number):
         """Get detailed microcycle information for a specific day"""
