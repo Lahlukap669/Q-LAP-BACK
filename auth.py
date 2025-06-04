@@ -4,6 +4,7 @@ from database import db_manager
 from utils import format_user_data, sanitize_input, log_with_unicode
 import oracledb
 from datetime import timedelta
+import math
 
 bcrypt = Bcrypt()
 
@@ -515,6 +516,18 @@ class TrainerManager:
         try:
             connection = db_manager.get_connection()
             cursor = connection.cursor()
+
+            microcycle_active_rest_query = """
+                SELECT active_rest
+                FROM microcycles
+                WHERE id = :1
+            """
+            cursor.execute(microcycle_active_rest_query, [microcycle_id])
+            active_rest_data = cursor.fetchone()
+            if active_rest_data is not None:
+                active_rest = bool(active_rest_data[0])
+            else:
+                active_rest = False
             
             # Get methods for the microcycle on specified day
             methods_query = """
@@ -574,7 +587,7 @@ class TrainerManager:
                     WHERE em.microcycle_id = :1
                         AND e.method_id = :2
                         AND em.day_of_week_number = :3
-                    ORDER BY em.exercise_date, e.exercise
+                    ORDER BY em.exercise_date, em.id
                 """
                 
                 cursor.execute(exercises_query, [microcycle_id, method_id, day_of_week_number])
@@ -595,17 +608,40 @@ class TrainerManager:
                     }
                     exercises.append(exercise_obj)
                 
-                # Build method object
+                # Helper function to handle None values in calculations
+                def safe_math_operation(value, operation_func, default=None):
+                    """Safely perform math operations, handling None values"""
+                    if value is not None:
+                        return operation_func(value)
+                    return default
+                
+                # Build method object with None-safe calculations
                 method_obj = {
                     'method_id': method_data[0],
                     'method_name': method_data[1],
                     'method_group': method_data[2],
                     'method_parameters': {
-                        'sets': method_data[3],
+                        'sets': safe_math_operation(
+                            method_data[3], 
+                            lambda x: math.floor(x/2) if active_rest else x,
+                            method_data[3]
+                        ),
                         'repetitions': method_data[4],
-                        'burden_percentage_of_mvc': method_data[5],
-                        'vo2_max': method_data[6],
-                        'hr_percentage': method_data[7],
+                        'burden_percentage_of_mvc': safe_math_operation(
+                            method_data[5],
+                            lambda x: math.floor(x-10) if active_rest else x,
+                            method_data[5]
+                        ),
+                        'vo2_max': safe_math_operation(
+                            method_data[6],
+                            lambda x: math.floor(x-10) if active_rest else x,
+                            method_data[6]
+                        ),
+                        'hr_percentage': safe_math_operation(
+                            method_data[7],
+                            lambda x: math.floor(x-10) if active_rest else x,
+                            method_data[7]
+                        ),
                         'rest_seconds': method_data[8],
                         'duration_min': method_data[9],
                         'contraction_type': method_data[10],
@@ -633,6 +669,7 @@ class TrainerManager:
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri pridobivanju informacij o mikrociklu {microcycle_id}: {e}")
             raise Exception(f"Napaka pri pridobivanju informacij o mikrociklu: {str(e)}")
+
 
     @staticmethod
     def get_my_athletes(trainer_id):
