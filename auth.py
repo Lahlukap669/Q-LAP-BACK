@@ -508,6 +508,264 @@ class TrainerManager:
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri iskanju športnikov: {e}")
             raise Exception(f"Napaka pri iskanju športnikov: {str(e)}")
+    @staticmethod
+    def get_test_exercises():
+        """Get all test exercises grouped by motor ability and method group"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # Get motor abilities that have test exercises
+            motor_abilities_query = """
+                SELECT DISTINCT ma.id, ma.motor_ability 
+                FROM motor_abilities ma
+                JOIN methods m ON ma.id = m.motor_ability_id
+                JOIN exercises e ON m.id = e.method_id
+                WHERE e.test = 1
+                ORDER BY ma.motor_ability
+            """
+            cursor.execute(motor_abilities_query)
+            motor_abilities = cursor.fetchall()
+            
+            result = []
+            for ma in motor_abilities:
+                motor_ability_id = ma[0]
+                motor_ability_name = ma[1]
+                
+                # Get method groups for this motor ability that have test exercises
+                method_groups_query = """
+                    SELECT DISTINCT m.method_group
+                    FROM methods m
+                    JOIN exercises e ON m.id = e.method_id
+                    WHERE m.motor_ability_id = :1
+                      AND e.test = 1
+                    ORDER BY m.method_group
+                """
+                cursor.execute(method_groups_query, [motor_ability_id])
+                method_groups = cursor.fetchall()
+                
+                method_groups_list = []
+                for mg in method_groups:
+                    method_group_name = mg[0]
+                    
+                    # Get test exercises for this motor ability and method group
+                    exercises_query = """
+                        SELECT e.id, e.exercise, e.description, e.video_url
+                        FROM exercises e
+                        JOIN methods m ON e.method_id = m.id
+                        WHERE m.motor_ability_id = :1
+                          AND m.method_group = :2
+                          AND e.test = 1
+                        ORDER BY e.exercise
+                    """
+                    cursor.execute(exercises_query, [motor_ability_id, method_group_name])
+                    exercises = cursor.fetchall()
+                    
+                    exercises_list = []
+                    for exercise in exercises:
+                        exercises_list.append({
+                            'id': exercise[0],
+                            'exercise': exercise[1],
+                            'description': exercise[2],
+                            'video_url': exercise[3]
+                        })
+                    
+                    method_groups_list.append({
+                        'method_group': method_group_name,
+                        'exercises': exercises_list
+                    })
+                
+                result.append({
+                    'motor_ability': motor_ability_name,
+                    'method_groups': method_groups_list
+                })
+            
+            cursor.close()
+            connection.close()
+            
+            log_with_unicode(f"✓ Pridobljene testne vaje razvrščene po motoričnih sposobnostih")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju testnih vaj: {e}")
+            raise Exception(f"Napaka pri pridobivanju testnih vaj: {str(e)}")
+
+
+    @staticmethod
+    @staticmethod
+    def get_tests(trainer_id):
+        """Get all tests for a specific trainer"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # Get tests with athlete information
+            tests_query = """
+                SELECT 
+                    t.id,
+                    t.test_date,
+                    u.first_name,
+                    u.last_name
+                FROM tests t
+                JOIN users u ON t.athlete_id = u.id
+                WHERE t.trainer_id = :1
+                ORDER BY t.test_date DESC, t.id DESC
+            """
+            
+            cursor.execute(tests_query, [trainer_id])
+            tests_data = cursor.fetchall()
+            
+            tests = []
+            for test_data in tests_data:
+                # Since test_date is varchar in database, handle it as string
+                test_date_raw = test_data[1]
+                first_name = test_data[2]
+                last_name = test_data[3]
+                
+                # Create full name
+                full_name = f"{first_name} {last_name}" if first_name and last_name else None
+                
+                test_obj = {
+                    'id': test_data[0],
+                    'test_date': test_date_raw,  # Keep as string since it's varchar in DB
+                    'athlete_full_name': full_name
+                }
+                tests.append(test_obj)
+            
+            cursor.close()
+            connection.close()
+            
+            log_with_unicode(f"✓ Pridobljenih {len(tests)} testov za trenerja {trainer_id}")
+            return tests
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju testov za trenerja {trainer_id}: {e}")
+            raise Exception(f"Napaka pri pridobivanju testov: {str(e)}")
+    
+    @staticmethod
+    def create_test(trainer_id, athlete_id, test_date, exercises):
+        """Create a test with provided inputs - individual inserts for each exercise"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # First, verify the athlete exists and belongs to this trainer
+            athlete_check_query = """
+                SELECT COUNT(*) as count
+                FROM trainers_athletes ta
+                JOIN users u ON ta.athlete_id = u.id
+                WHERE ta.trainer_id = :1 AND ta.athlete_id = :2 AND u.role = 1
+            """
+            cursor.execute(athlete_check_query, [trainer_id, athlete_id])
+            result = cursor.fetchone()
+            
+            if result[0] == 0:
+                raise Exception("Športnik ni dodeljen temu trenerju ali ne obstaja")
+            
+            # Insert test record and get test_id (FIXED: Handle list return)
+            insert_test_query = """
+                INSERT INTO tests (athlete_id, trainer_id, test_date)
+                VALUES (:1, :2, TO_DATE(:3, 'YYYY-MM-DD'))
+                RETURNING id INTO :4
+            """
+            test_id_var = cursor.var(oracledb.NUMBER)
+            cursor.execute(insert_test_query, [athlete_id, trainer_id, test_date, test_id_var])
+            
+            # FIX: Handle the returned value properly
+            test_id_raw = test_id_var.getvalue()
+            log_with_unicode(f"🔍 Raw test_id from database: {test_id_raw} (type: {type(test_id_raw)})")
+            
+            # Handle case where test_id comes back as a list
+            if isinstance(test_id_raw, list):
+                if len(test_id_raw) > 0:
+                    test_id = test_id_raw[0]
+                    log_with_unicode(f"⚠️ test_id was a list, taking first element: {test_id}")
+                else:
+                    raise Exception("Napaka: test_id je prazen seznam")
+            else:
+                test_id = test_id_raw
+            
+            log_with_unicode(f"✓ Test ustvarjen z ID: {test_id}")
+            
+            # Process each exercise individually
+            successful_inserts = 0
+            
+            for i, exercise in enumerate(exercises):
+                try:
+                    # DEBUG: Print the exercise data to see what we're getting
+                    log_with_unicode(f"🔍 Processing exercise {i+1}: {exercise}")
+                    
+                    # Extract values - these should be simple values based on your debug output
+                    exercise_id = exercise.get('exercise_id')
+                    measure = exercise.get('measure')
+                    unit = exercise.get('unit')
+                    
+                    # Validate each exercise data
+                    if exercise_id is None or measure is None or unit is None:
+                        raise Exception(f'Vsi podatki za vajo {i+1} (exercise_id, measure, unit) so obvezni')
+                    
+                    # Convert to proper types with error handling
+                    try:
+                        exercise_id_int = int(exercise_id)
+                        measure_float = float(measure)
+                        unit_str = str(unit).strip()
+                    except (ValueError, TypeError) as conv_error:
+                        raise Exception(f'Napaka pri pretvorbi podatkov za vajo {i+1}: {conv_error}')
+                    
+                    # Verify exercise exists
+                    exercise_check_query = "SELECT COUNT(*) FROM exercises WHERE id = :1"
+                    cursor.execute(exercise_check_query, [exercise_id_int])
+                    exercise_exists = cursor.fetchone()
+                    if exercise_exists[0] == 0:
+                        raise Exception(f'Vaja z ID {exercise_id_int} ne obstaja')
+                    
+                    # Insert individual exercise test record (FIX: Ensure test_id is properly converted)
+                    insert_exercise_test_query = """
+                        INSERT INTO exercises_tests (test_id, exercise_id, measure, unit)
+                        VALUES (:1, :2, :3, :4)
+                    """
+                    
+                    # FIX: Convert test_id to int here, after handling list case above
+                    test_id_final = int(test_id)
+                    log_with_unicode(f"🔍 Final values for DB insert: test_id={test_id_final}, exercise_id={exercise_id_int}, measure={measure_float}, unit={unit_str}")
+                    
+                    cursor.execute(insert_exercise_test_query, [
+                        test_id_final,     # Now this should be a proper integer
+                        exercise_id_int,
+                        measure_float,
+                        unit_str
+                    ])
+                    
+                    successful_inserts += 1
+                    log_with_unicode(f"✓ Vaja {i+1} (ID: {exercise_id_int}) uspešno dodana v test")
+                    
+                except Exception as exercise_error:
+                    log_with_unicode(f"✗ Napaka pri dodajanju vaje {i+1}: {exercise_error}")
+                    # Re-raise the exception to stop the entire process
+                    raise Exception(f"Napaka pri vaji {i+1}: {str(exercise_error)}")
+            
+            # If we get here, all exercises were inserted successfully
+            connection.commit()
+            cursor.close()
+            connection.close()
+            
+            success_message = f"Test z ID {test_id} je bil uspešno ustvarjen z {successful_inserts} vajami"
+            log_with_unicode(f"✓ {success_message}")
+            return success_message
+            
+        except Exception as e:
+            # Make sure to rollback on any error
+            try:
+                if 'connection' in locals():
+                    connection.rollback()
+                    cursor.close()
+                    connection.close()
+            except:
+                pass
+            log_with_unicode(f"✗ Napaka pri ustvarjanju testa: {e}")
+            raise
+
+
 
     @staticmethod
     def delete_periodization(trainer_id, periodization_id):

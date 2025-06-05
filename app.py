@@ -147,7 +147,59 @@ delete_periodization_response_model = api.model('IzbrisiPeriodizacijoOdgovor', {
     'message': fields.String(description='Sporočilo o uspešnem brisanju', example='Periodizacija z ID 199 je bila uspešno izbrisana')
 })
 
+test_exercise_model = api.model('TestnaVaja', {
+    'id': fields.Integer(description='ID vaje', example=123),
+    'exercise': fields.String(description='Ime vaje', example='Jump Squat'),
+    'description': fields.String(description='Opis vaje', example='Explosive jumping movement from squat position'),
+    'video_url': fields.String(description='URL videa', example='https://example.com/jump-squat.mp4')
+})
 
+test_method_group_model = api.model('TestnaSkupinaMetod', {
+    'method_group': fields.String(description='Ime skupine metod', example='Explosive Power'),
+    'exercises': fields.List(fields.Nested(test_exercise_model), description='Seznam testnih vaj v skupini')
+})
+
+test_motor_ability_model = api.model('TestnaMotoričnaSposobnost', {
+    'motor_ability': fields.String(description='Ime motorične sposobnosti', example='Moč'),
+    'method_groups': fields.List(fields.Nested(test_method_group_model), description='Skupine metod s testnimi vajami')
+})
+
+test_exercises_list_model = api.model('SeznamTestnihVaj', {
+    'message': fields.String(description='Sporočilo', example='Testne vaje uspešno pridobljene'),
+    'data': fields.List(fields.Nested(test_motor_ability_model), description='Testne vaje razvrščene po motoričnih sposobnostih'),
+    'total_exercises': fields.Integer(description='Skupno število testnih vaj', example=25)
+})
+
+test_exercise_input_model = api.model('TestVaja', {
+    'exercise_id': fields.Integer(required=True, description='ID vaje', example=123),
+    'measure': fields.Float(required=True, description='Meritev', example=50.5),
+    'unit': fields.String(required=True, description='Enota meritve', example='kg')
+})
+
+create_test_model = api.model('UstvariTest', {
+    'athlete_id': fields.Integer(required=True, description='ID športnika', example=1),
+    'date': fields.String(required=True, description='Datum testa (YYYY-MM-DD)', example='2025-06-01'),
+    'exercises': fields.List(fields.Nested(test_exercise_input_model), required=True, description='Seznam vaj za test')
+})
+
+create_test_response_model = api.model('UstvariTestOdgovor', {
+    'message': fields.String(description='Sporočilo o uspešnem ustvarjanju', example='Test z ID 10 je bil uspešno ustvarjen z 3 vajami')
+})
+
+
+test_info_model = api.model('InformacijeTest', {
+    'id': fields.Integer(description='ID testa', example=15),
+    'test_date': fields.String(description='Datum testa', example='2025-06-01'),
+    'athlete_first_name': fields.String(description='Ime športnika', example='Ana'),
+    'athlete_last_name': fields.String(description='Priimek športnika', example='Novak'),
+    'athlete_full_name': fields.String(description='Polno ime športnika', example='Ana Novak')
+})
+
+tests_list_model = api.model('SeznamTestov', {
+    'message': fields.String(description='Sporočilo', example='Testi uspešno pridobljeni'),
+    'tests': fields.List(fields.Nested(test_info_model), description='Seznam testov'),
+    'count': fields.Integer(description='Število testov', example=5)
+})
 
 
 create_periodization_response_model = api.model('UstvariPeriodizacijoOdgovor', {
@@ -814,6 +866,172 @@ class TrainerCreatePeriodization(Resource):
                 return create_json_response(app, {
                     'message': 'Napaka pri ustvarjanju periodizacije'
                 }, 500)
+
+
+@user_ns.route('/trainer/get-test-exercises')
+class TrainerGetTestExercises(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Testne vaje uspešno pridobljene', test_exercises_list_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @role_required(TRAINER)
+    def get(self):
+        """Pridobi vse testne vaje razvrščene po motoričnih sposobnostih in skupinah metod"""
+        try:
+            # Get structured test exercises
+            structured_exercises = TrainerManager.get_test_exercises()
+            
+            # Count total exercises
+            total_exercises = 0
+            for motor_ability in structured_exercises:
+                for method_group in motor_ability['method_groups']:
+                    total_exercises += len(method_group['exercises'])
+            
+            return create_json_response(app, {
+                'message': 'Testne vaje uspešno pridobljene',
+                'data': structured_exercises,
+                'total_exercises': total_exercises
+            }, 200)
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju testnih vaj: {e}")
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju testnih vaj'
+            }, 500)
+
+
+@user_ns.route('/trainer/create-test')
+class TrainerCreateTest(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(create_test_model, validate=True)
+    @auth_ns.response(201, 'Test uspešno ustvarjen', create_test_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Športnik ni najden ali ni dodeljen trenerju')
+    @role_required(TRAINER)
+    def post(self):
+        """Ustvari nov test za športnika"""
+        try:
+            current_trainer_id = int(get_jwt_identity())
+            data = request.get_json()
+            
+            # Extract data
+            athlete_id = data.get('athlete_id')
+            test_date = data.get('date')
+            exercises = data.get('exercises')
+            
+            # Validate required fields
+            if not athlete_id or not test_date or not exercises:
+                return create_json_response(app, {
+                    'message': 'Vsi podatki (athlete_id, date, exercises) so obvezni'
+                }, 400)
+            
+            # Validate athlete_id
+            if not isinstance(athlete_id, int) or athlete_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID športnika mora biti pozitivno celo število'
+                }, 400)
+            
+            # Validate date format
+            if not test_date or len(test_date) != 10:
+                return create_json_response(app, {
+                    'message': 'Datum mora biti v formatu YYYY-MM-DD'
+                }, 400)
+            
+            # Validate exercises list
+            if not isinstance(exercises, list) or len(exercises) == 0:
+                return create_json_response(app, {
+                    'message': 'Seznam vaj ne sme biti prazen'
+                }, 400)
+            
+            # Validate each exercise
+            for i, exercise in enumerate(exercises):
+                if not isinstance(exercise, dict):
+                    return create_json_response(app, {
+                        'message': f'Vaja {i+1} mora biti objekt'
+                    }, 400)
+                
+                required_fields = ['exercise_id', 'measure', 'unit']
+                missing_fields = [field for field in required_fields if field not in exercise]
+                
+                if missing_fields:
+                    return create_json_response(app, {
+                        'message': f'Vaja {i+1} manjka polja: {", ".join(missing_fields)}'
+                    }, 400)
+                
+                if not isinstance(exercise['exercise_id'], int) or exercise['exercise_id'] <= 0:
+                    return create_json_response(app, {
+                        'message': f'ID vaje {i+1} mora biti pozitivno celo število'
+                    }, 400)
+                
+                if not isinstance(exercise['measure'], (int, float)):
+                    return create_json_response(app, {
+                        'message': f'Meritev vaje {i+1} mora biti število'
+                    }, 400)
+                
+                if not isinstance(exercise['unit'], str) or not exercise['unit'].strip():
+                    return create_json_response(app, {
+                        'message': f'Enota vaje {i+1} mora biti neprazen niz'
+                    }, 400)
+            
+            # Create test
+            message = TrainerManager.create_test(current_trainer_id, athlete_id, test_date, exercises)
+            
+            return create_json_response(app, {
+                'message': message
+            }, 201)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri ustvarjanju testa: {error_message}")
+            
+            if "ni dodeljen temu trenerju" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            elif "ne obstaja" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 400)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri ustvarjanju testa'
+                }, 500)
+
+@user_ns.route('/trainer/get-tests')
+class TrainerGetTests(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Testi uspešno pridobljeni', tests_list_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Trener ni najden')
+    @role_required(TRAINER)
+    def get(self):
+        """Pridobi vse teste trenutnega trenerja"""
+        try:
+            current_trainer_id = int(get_jwt_identity())
+            
+            # Verify trainer exists
+            trainer = UserManager.get_user_by_id(current_trainer_id)
+            if not trainer:
+                return create_json_response(app, {'message': 'Trener ni najden'}, 404)
+            
+            # Get trainer's tests
+            tests = TrainerManager.get_tests(current_trainer_id)
+            
+            return create_json_response(app, {
+                'message': 'Testi uspešno pridobljeni',
+                'tests': tests,
+                'count': len(tests)
+            }, 200)
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju testov: {e}")
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju testov'
+            }, 500)
+
 
 @user_ns.route('/trainer/methods')
 class TrainerMethods(Resource):
