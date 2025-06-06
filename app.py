@@ -202,6 +202,22 @@ tests_list_model = api.model('SeznamTestov', {
 })
 
 
+past_test_exercise_model = api.model('PrejšnjaTestnaVaja', {
+    'exercise_id': fields.Integer(description='ID vaje', example=292),
+    'unit': fields.String(description='Enota meritve', example='kg')
+})
+
+past_test_exercises_response_model = api.model('PrejšnjeTestneVajeOdgovor', {
+    'message': fields.String(description='Sporočilo', example='Prejšnje testne vaje uspešno pridobljene'),
+    'most_recent_test_id': fields.Integer(description='ID najnovejšega testa', example=12),
+    'most_recent_test_date': fields.String(description='Datum najnovejšega testa', example='2025-04-15'),
+    'exercises': fields.List(fields.Nested(past_test_exercise_model), description='Seznam vaj z enotami'),
+    'found_past_test': fields.Boolean(description='Ali je bil najden prejšnji test', example=True)
+})
+
+
+
+
 create_periodization_response_model = api.model('UstvariPeriodizacijoOdgovor', {
     'message': fields.String(description='Sporočilo o uspešnem ustvarjanju', example='Periodizacija uspešno ustvarjena')
 })
@@ -865,6 +881,83 @@ class TrainerCreatePeriodization(Resource):
             else:
                 return create_json_response(app, {
                     'message': 'Napaka pri ustvarjanju periodizacije'
+                }, 500)
+
+
+@user_ns.route('/trainer/get-past-test-exercises')
+class TrainerGetPastTestExercises(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(past_test_exercise_model, validate=True)
+    @auth_ns.response(200, 'Prejšnje testne vaje uspešno pridobljene', past_test_exercises_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Športnik ni najden ali ni dodeljen trenerju')
+    @role_required(TRAINER)
+    def post(self):
+        """Pridobi ID-je vaj iz najnovejšega testa v zadnjih 2 mesecih"""
+        try:
+            current_trainer_id = int(get_jwt_identity())
+            data = request.get_json()
+            
+            # Extract data
+            test_date = data.get('test_date')
+            athlete_id = data.get('athlete_id')
+            
+            # Validate required fields
+            if not test_date or not athlete_id:
+                return create_json_response(app, {
+                    'message': 'Datum testa in ID športnika sta obvezna'
+                }, 400)
+            
+            # Validate athlete_id
+            if not isinstance(athlete_id, int) or athlete_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID športnika mora biti pozitivno celo število'
+                }, 400)
+            
+            # Validate date format
+            if not test_date or len(test_date) != 10:
+                return create_json_response(app, {
+                    'message': 'Datum mora biti v formatu YYYY-MM-DD'
+                }, 400)
+            
+            # Validate date format more thoroughly
+            try:
+                from datetime import datetime
+                datetime.strptime(test_date, '%Y-%m-%d')
+            except ValueError:
+                return create_json_response(app, {
+                    'message': 'Neveljaven datum. Uporabite format YYYY-MM-DD'
+                }, 400)
+            
+            # Get past test exercises
+            result = TrainerManager.get_past_test_exercises(current_trainer_id, test_date, athlete_id)
+            
+            if result['found_past_test']:
+                message = f"Najden prejšnji test z {len(result['exercises'])} vajami"
+            else:
+                message = "Ni najdenega prejšnjega testa v zadnjih 2 mesecih"
+            
+            return create_json_response(app, {
+                'message': message,
+                'most_recent_test_id': result['most_recent_test_id'],
+                'most_recent_test_date': result['most_recent_test_date'],
+                'exercises': result['exercises'],
+                'found_past_test': result['found_past_test']
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri iskanju prejšnjih testnih vaj: {error_message}")
+            
+            if "ni dodeljen temu trenerju" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri iskanju prejšnjih testnih vaj'
                 }, 500)
 
 

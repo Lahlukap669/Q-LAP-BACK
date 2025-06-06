@@ -471,6 +471,8 @@ class TrainerManager:
             log_with_unicode(f"✗ Napaka pri pridobivanju periodizacij za trenerja {trainer_id}: {e}")
             log_with_unicode(f"✗ Detailed error: {str(e)}")
             raise Exception(f"Napaka pri pridobivanju periodizacij: {str(e)}")
+    
+    
     @staticmethod
     def search_athletes():
         """Get all available athletes (not assigned to any trainer)"""
@@ -508,6 +510,8 @@ class TrainerManager:
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri iskanju športnikov: {e}")
             raise Exception(f"Napaka pri iskanju športnikov: {str(e)}")
+    
+    
     @staticmethod
     def get_test_exercises():
         """Get all test exercises grouped by motor ability and method group"""
@@ -592,6 +596,94 @@ class TrainerManager:
 
 
     @staticmethod
+    def get_past_test_exercises(trainer_id, test_date, athlete_id):
+        """Get exercise IDs and units from most recent test within last 2 months"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # First verify that athlete belongs to this trainer
+            athlete_check_query = """
+                SELECT COUNT(*) as count
+                FROM trainers_athletes ta
+                JOIN users u ON ta.athlete_id = u.id
+                WHERE ta.trainer_id = :1 AND ta.athlete_id = :2 AND u.role = 1
+            """
+            cursor.execute(athlete_check_query, [trainer_id, athlete_id])
+            result = cursor.fetchone()
+            
+            if result[0] == 0:
+                raise Exception("Športnik ni dodeljen temu trenerju ali ne obstaja")
+            
+            # FIXED: Handle DD-MON-RR format properly using Oracle DATE functions
+            past_tests_query = """
+                SELECT id, test_date
+                FROM tests
+                WHERE trainer_id = :1 
+                  AND athlete_id = :2
+                  AND TO_DATE(test_date, 'DD-MON-RR') >= TO_DATE(:3, 'YYYY-MM-DD') - INTERVAL '2' MONTH
+                  AND TO_DATE(test_date, 'DD-MON-RR') < TO_DATE(:4, 'YYYY-MM-DD')
+                ORDER BY TO_DATE(test_date, 'DD-MON-RR') DESC, id DESC
+            """
+            
+            log_with_unicode(f"🔍 Searching for tests between {test_date} - 2 months and {test_date}")
+            log_with_unicode(f"🔍 Converting DD-MON-RR format to DATE for comparison")
+            
+            cursor.execute(past_tests_query, [trainer_id, athlete_id, test_date, test_date])
+            past_tests = cursor.fetchall()
+            
+            log_with_unicode(f"🔍 Found {len(past_tests)} past tests using proper date conversion")
+            
+            if not past_tests:
+                return {
+                    'most_recent_test_id': None,
+                    'most_recent_test_date': None,
+                    'exercises': [],
+                    'found_past_test': False
+                }
+            
+            # Get the most recent test (first in the ordered result)
+            most_recent_test = past_tests[0]
+            most_recent_test_id = most_recent_test[0]
+            most_recent_test_date = most_recent_test[1]
+            
+            log_with_unicode(f"✓ Most recent test found: ID {most_recent_test_id}, Date: {most_recent_test_date}")
+            
+            # Get exercise IDs and units from the most recent test
+            exercises_query = """
+                SELECT DISTINCT exercise_id, unit
+                FROM exercises_tests
+                WHERE test_id = :1
+                ORDER BY exercise_id
+            """
+            
+            cursor.execute(exercises_query, [most_recent_test_id])
+            exercise_data = cursor.fetchall()
+            
+            exercises = []
+            for row in exercise_data:
+                exercises.append({
+                    'exercise_id': row[0],
+                    'unit': row[1]
+                })
+            
+            cursor.close()
+            connection.close()
+            
+            result = {
+                'most_recent_test_id': most_recent_test_id,
+                'most_recent_test_date': most_recent_test_date,
+                'exercises': exercises,
+                'found_past_test': True
+            }
+            
+            log_with_unicode(f"✓ Successfully found test {most_recent_test_id} with {len(exercises)} exercises")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri iskanju prejšnjih testov: {e}")
+            raise
+
     @staticmethod
     def get_tests(trainer_id):
         """Get all tests for a specific trainer"""
