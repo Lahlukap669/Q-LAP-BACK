@@ -17,11 +17,6 @@ class DatabaseManager:
         # Use QuotaGuard Static for database connections
         self.quotaguard_url = os.getenv('QUOTAGUARDSTATIC_URL')
         
-        start = time.time()
-        result = db_manager.execute_query("SELECT 1 FROM DUAL")
-        duration = time.time() - start
-        return {'query_time_ms': duration * 1000, 'result': result}
-        
     def get_connection(self):
         """Get connection through QuotaGuard Static"""
         try:
