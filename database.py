@@ -2,7 +2,7 @@ import oracledb
 import os
 from dotenv import load_dotenv
 from utils import format_database_results, format_database_row, log_with_unicode
-
+import time
 load_dotenv()
 
 # Set Oracle defaults for proper character handling
@@ -16,6 +16,11 @@ class DatabaseManager:
         
         # Use QuotaGuard Static for database connections
         self.quotaguard_url = os.getenv('QUOTAGUARDSTATIC_URL')
+        
+        start = time.time()
+        result = db_manager.execute_query("SELECT 1 FROM DUAL")
+        duration = time.time() - start
+        return {'query_time_ms': duration * 1000, 'result': result}
         
     def get_connection(self):
         """Get connection through QuotaGuard Static"""
