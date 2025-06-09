@@ -13,9 +13,7 @@ class DatabaseManager:
         self.user = os.getenv('ORACLE_USER')
         self.password = os.getenv('ORACLE_PASSWORD')
         self.dsn = os.getenv('ORACLE_DSN')
-        
-        # Use QuotaGuard Static for database connections
-        self.quotaguard_url = os.getenv('QUOTAGUARDSTATIC_URL')
+    
         
     def get_connection(self):
         """Get connection through QuotaGuard Static"""
