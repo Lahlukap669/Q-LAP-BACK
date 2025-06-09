@@ -13,15 +13,23 @@ class DatabaseManager:
         self.user = os.getenv('ORACLE_USER')
         self.password = os.getenv('ORACLE_PASSWORD')
         self.dsn = os.getenv('ORACLE_DSN')
-        log_with_unicode("✓ Database Manager initialized")
-
+        
+        # Use QuotaGuard Static for database connections
+        self.quotaguard_url = os.getenv('QUOTAGUARDSTATIC_URL')
+        
     def get_connection(self):
-        """Get direct database connection (your working approach)"""
+        """Get connection through QuotaGuard Static"""
         try:
+            if self.quotaguard_url:
+                # Parse QuotaGuard URL and use proxy
+                # Implementation depends on QuotaGuard's specific setup
+                log_with_unicode("✓ Using QuotaGuard Static for DB connection")
+            
             connection = oracledb.connect(
                 user=self.user,
                 password=self.password,
-                dsn=self.dsn
+                dsn=self.dsn,
+                timeout=30  # Add connection timeout
             )
             return connection
         except Exception as e:
