@@ -201,6 +201,63 @@ tests_list_model = api.model('SeznamTestov', {
     'count': fields.Integer(description='Število testov', example=5)
 })
 
+delete_test_model = api.model('IzbrisiTest', {
+    'test_id': fields.Integer(required=True, description='ID testa za brisanje', example=5)
+})
+
+delete_test_response_model = api.model('IzbrisiTestOdgovor', {
+    'message': fields.String(description='Sporočilo o uspešnem brisanju', example='Test z ID 5 je bil uspešno izbrisan')
+})
+
+test_exercise_analytics_model = api.model('TestVajaAnalitika', {
+    'exercise': fields.String(description='Ime vaje', example='Bench Press'),
+    'measure': fields.Float(description='Meritev', example=75.5),
+    'unit': fields.String(description='Enota', example='kg')
+})
+
+test_analytics_model = api.model('TestAnalitika', {
+    'id': fields.Integer(description='ID testa', example=5),
+    'test_date': fields.String(description='Datum testa', example='05-JUN-25'),
+    'exercises': fields.List(fields.Nested(test_exercise_analytics_model), description='Seznam vaj v testu')
+})
+
+get_test_analytics_by_athlete_model = api.model('PridobiTestAnalitikoPodleSportnika', {
+    'athlete_id': fields.Integer(required=True, description='ID športnika za analitiko', example=25)
+})
+
+test_analytics_by_athlete_response_model = api.model('TestAnalitikaPoSportnikuOdgovor', {
+    'message': fields.String(description='Sporočilo', example='Test analitika uspešno pridobljena'),
+    'athlete_id': fields.Integer(description='ID športnika', example=25),
+    'total_tests': fields.Integer(description='Skupno število testov', example=3),
+    'tests': fields.List(fields.Nested(test_analytics_model), description='Seznam vseh testov z vajami')
+})
+
+test_motor_ability_analytics_model = api.model('TestMotoricnaSposobnostAnalitika', {
+    'motor_ability': fields.String(description='Motorična sposobnost', example='Moč'),
+    'measure': fields.Float(description='Normalizirana meritev (allometric scaling)', example=2.85),
+    'unit': fields.String(description='Normalizirana enota', example='kg/kg^0.67'),
+    'exercise_count': fields.Integer(description='Število vaj v izračunu', example=3),
+    'category': fields.String(description='Kategorija normalizacije', example='strength')
+})
+
+
+test_motor_ability_analytics_test_model = api.model('TestMotoricneSposobnostiAnalitika', {
+    'id': fields.Integer(description='ID testa', example=5),
+    'test_date': fields.String(description='Datum testa', example='05-JUN-25'),
+    'motor_abilities': fields.List(fields.Nested(test_motor_ability_analytics_model), description='Seznam motoričnih sposobnosti v testu')
+})
+
+get_motor_ability_analytics_model = api.model('PridobiAnalitikuMotoricnihSposobnosti', {
+    'athlete_id': fields.Integer(required=True, description='ID športnika za analitiko', example=25)
+})
+
+motor_ability_analytics_response_model = api.model('MotoricneSposobnostiAnalitikaOdgovor', {
+    'message': fields.String(description='Sporočilo', example='Analitika motoričnih sposobnosti uspešno pridobljena'),
+    'athlete_id': fields.Integer(description='ID športnika', example=25),
+    'total_tests': fields.Integer(description='Skupno število testov', example=3),
+    'tests': fields.List(fields.Nested(test_motor_ability_analytics_test_model), description='Seznam vseh testov z motoričnimi sposobnostmi')
+})
+
 
 past_test_exercise_model = api.model('PrejšnjaTestnaVaja', {
     'exercise_id': fields.Integer(description='ID vaje', example=292),
@@ -958,6 +1015,167 @@ class TrainerGetPastTestExercises(Resource):
             else:
                 return create_json_response(app, {
                     'message': 'Napaka pri iskanju prejšnjih testnih vaj'
+                }, 500)
+
+@user_ns.route('/trainer/delete-test')
+class TrainerDeleteTest(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(delete_test_model, validate=True)
+    @auth_ns.response(200, 'Test uspešno izbrisan', delete_test_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Test ni najden', error_response_model)
+    @role_required(TRAINER)
+    def delete(self):
+        """Izbriši test po ID-ju (samo trener lahko briše svoje teste)"""
+        try:
+            current_trainer_id = int(get_jwt_identity())
+            data = request.get_json()
+            
+            # Validate input
+            if not data or not data.get('test_id'):
+                return create_json_response(app, {
+                    'message': 'ID testa je obvezen'
+                }, 400)
+            
+            test_id = data['test_id']
+            
+            # Validate test_id is a positive integer
+            if not isinstance(test_id, int) or test_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID testa mora biti pozitivno celo število'
+                }, 400)
+            
+            # Delete test
+            message = TrainerManager.delete_test(current_trainer_id, test_id)
+            
+            return create_json_response(app, {
+                'message': message
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri brisanju testa: {error_message}")
+            
+            if "ne obstaja ali ni dodeljen" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            elif "ni bil najden" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri brisanju testa'
+                }, 500)
+
+
+@user_ns.route('/trainer/get-test-analytics')
+class TrainerGetTestAnalytics(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(get_test_analytics_by_athlete_model, validate=True)
+    @auth_ns.response(200, 'Test analitika uspešno pridobljena', test_analytics_by_athlete_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Športnik ni najden ali ni dodeljen trenerju')
+    @role_required(TRAINER)
+    def post(self):
+        """Pridobi analitiko vseh testov za določenega športnika"""
+        try:
+            current_trainer_id = int(get_jwt_identity())
+            data = request.get_json()
+            
+            # Validate input
+            if not data or not data.get('athlete_id'):
+                return create_json_response(app, {
+                    'message': 'ID športnika je obvezen'
+                }, 400)
+            
+            athlete_id = data['athlete_id']
+            
+            # Validate athlete_id is a positive integer
+            if not isinstance(athlete_id, int) or athlete_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID športnika mora biti pozitivno celo število'
+                }, 400)
+            
+            # Get test analytics by athlete
+            analytics = TrainerManager.get_test_analytics_by_athlete(current_trainer_id, athlete_id)
+            
+            return create_json_response(app, {
+                'message': 'Test analitika uspešno pridobljena',
+                'athlete_id': analytics['athlete_id'],
+                'total_tests': analytics['total_tests'],
+                'tests': analytics['tests']
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri pridobivanju test analitike: {error_message}")
+            
+            if "ni dodeljen temu trenerju" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri pridobivanju test analitike'
+                }, 500)
+
+@user_ns.route('/trainer/get-motor-ability-analytics')
+class TrainerGetMotorAbilityAnalytics(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(get_motor_ability_analytics_model, validate=True)
+    @auth_ns.response(200, 'Analitika motoričnih sposobnosti uspešno pridobljena', motor_ability_analytics_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @auth_ns.response(404, 'Športnik ni najden ali ni dodeljen trenerju')
+    @role_required(TRAINER)
+    def post(self):
+        """Pridobi analitiko motoričnih sposobnosti za vse teste določenega športnika"""
+        try:
+            current_trainer_id = int(get_jwt_identity())
+            data = request.get_json()
+            
+            # Validate input
+            if not data or not data.get('athlete_id'):
+                return create_json_response(app, {
+                    'message': 'ID športnika je obvezen'
+                }, 400)
+            
+            athlete_id = data['athlete_id']
+            
+            # Validate athlete_id is a positive integer
+            if not isinstance(athlete_id, int) or athlete_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID športnika mora biti pozitivno celo število'
+                }, 400)
+            
+            # Get motor ability analytics by athlete
+            analytics = TrainerManager.get_motor_ability_analytics_by_athlete(current_trainer_id, athlete_id)
+            
+            return create_json_response(app, {
+                'message': 'Analitika motoričnih sposobnosti uspešno pridobljena',
+                'athlete_id': analytics['athlete_id'],
+                'total_tests': analytics['total_tests'],
+                'tests': analytics['tests']
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri pridobivanju analitike motoričnih sposobnosti: {error_message}")
+            
+            if "ni dodeljen temu trenerju" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri pridobivanju analitike motoričnih sposobnosti'
                 }, 500)
 
 

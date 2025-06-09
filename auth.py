@@ -857,7 +857,453 @@ class TrainerManager:
             log_with_unicode(f"✗ Napaka pri ustvarjanju testa: {e}")
             raise
 
+    @staticmethod
+    def delete_test(trainer_id, test_id):
+        """Delete a test by ID if it belongs to the trainer"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # First verify that the test belongs to the trainer
+            check_query = """
+                SELECT COUNT(*) as count
+                FROM tests
+                WHERE id = :1 AND trainer_id = :2
+            """
+            cursor.execute(check_query, [test_id, trainer_id])
+            result = cursor.fetchone()
+            
+            if result[0] == 0:  # Fixed: access first element of tuple
+                raise Exception(f"Test z ID {test_id} ne obstaja ali ni dodeljen temu trenerju")
+            
+            # Delete the test (cascades will handle related exercises_tests records if configured)
+            delete_query = "DELETE FROM tests WHERE id = :1"
+            cursor.execute(delete_query, [test_id])
+            
+            rows_affected = cursor.rowcount
+            connection.commit()
+            cursor.close()
+            connection.close()
+            
+            if rows_affected > 0:
+                success_message = f"Test z ID {test_id} je bil uspešno izbrisan"
+                log_with_unicode(f"✓ {success_message}")
+                return success_message
+            else:
+                raise Exception(f"Test z ID {test_id} ni bil najden")
+                
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri brisanju testa {test_id}: {e}")
+            raise
 
+    @staticmethod
+    def get_test_analytics_by_athlete(trainer_id, athlete_id):
+        """Get test analytics for all tests of a specific athlete"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # First verify the athlete belongs to the trainer
+            athlete_check_query = """
+                SELECT COUNT(*) as count
+                FROM trainers_athletes ta
+                JOIN users u ON ta.athlete_id = u.id
+                WHERE ta.trainer_id = :1 AND ta.athlete_id = :2 AND u.role = 1
+            """
+            cursor.execute(athlete_check_query, [trainer_id, athlete_id])
+            result = cursor.fetchone()
+            
+            if result[0] == 0:
+                raise Exception("Športnik ni dodeljen temu trenerju ali ne obstaja")
+            
+            log_with_unicode(f"✓ Športnik {athlete_id} pripada trenerju {trainer_id}")
+            
+            # Get all tests for this athlete and trainer, sorted by test_date
+            # Handle DD-MON-RR date format properly
+            all_tests_query = """
+                SELECT id, test_date
+                FROM tests
+                WHERE athlete_id = :1 AND trainer_id = :2
+                ORDER BY TO_DATE(test_date, 'DD-MON-RR') ASC, id ASC
+            """
+            
+            cursor.execute(all_tests_query, [athlete_id, trainer_id])
+            tests_data = cursor.fetchall()
+            
+            log_with_unicode(f"✓ Najdenih {len(tests_data)} testov za športnika {athlete_id}")
+            
+            tests = []
+            for test_data in tests_data:
+                current_test_id = test_data[0]
+                current_test_date = test_data[1]
+                
+                # Get exercises for this test
+                exercises_query = """
+                    SELECT 
+                        e.exercise,
+                        et.measure,
+                        et.unit
+                    FROM exercises_tests et
+                    JOIN exercises e ON et.exercise_id = e.id
+                    WHERE et.test_id = :1
+                    ORDER BY e.exercise
+                """
+                
+                cursor.execute(exercises_query, [current_test_id])
+                exercises_data = cursor.fetchall()
+                
+                exercises = []
+                for exercise_data in exercises_data:
+                    exercise_obj = {
+                        'exercise': exercise_data[0],
+                        'measure': exercise_data[1],
+                        'unit': exercise_data[2]
+                    }
+                    exercises.append(exercise_obj)
+                
+                test_obj = {
+                    'id': current_test_id,
+                    'test_date': current_test_date,
+                    'exercises': exercises
+                }
+                tests.append(test_obj)
+            
+            cursor.close()
+            connection.close()
+            
+            result = {
+                'athlete_id': athlete_id,
+                'total_tests': len(tests),
+                'tests': tests
+            }
+            
+            log_with_unicode(f"✓ Test analitika pripravljena za {len(tests)} testov športnika {athlete_id}")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju test analitike za športnika {athlete_id}: {e}")
+            raise
+
+    @staticmethod
+    def normalize_motor_ability_values(motor_abilities_data):
+        """Normalize test exercises using biomechanical indices for speed prediction"""
+        
+        # Biomechanical conversion coefficients for speed prediction (m/s)
+        # Based on research and established sport science indices
+        speed_conversion_indices = {
+            # Horizontal jumping tests (predict horizontal velocity)
+            'skok v daljino z mesta': {
+                'coefficient': 0.42,  # Distance (m) × 0.42 ≈ horizontal takeoff velocity (m/s)
+                'formula': 'sqrt(distance * 9.81 / sin(45°))',  # Projectile motion
+                'unit_conversion': 'm/s'
+            },
+            'troskok iz sonožnega odriva': {
+                'coefficient': 0.35,  # Triple jump has different biomechanics
+                'formula': 'distance * 0.35',
+                'unit_conversion': 'm/s'
+            },
+            
+            # Sprint tests (direct time to speed conversion)
+            'šprint letečih 20m': {
+                'coefficient': 20.0,  # 20m / time = speed
+                'formula': '20 / time',
+                'unit_conversion': 'm/s'
+            },
+            'štart iz bloka 20 m': {
+                'coefficient': 20.0,  # 20m / time = speed
+                'formula': '20 / time', 
+                'unit_conversion': 'm/s'
+            },
+            
+            # Vertical jumping (can estimate power but not direct speed)
+            'skok iz čepa': {
+                'coefficient': 4.9,  # Height (m) × 4.9 ≈ takeoff velocity
+                'formula': 'sqrt(2 * 9.81 * height)',
+                'unit_conversion': 'm/s'
+            },
+            'globinski skok': {
+                'coefficient': 4.9,
+                'formula': 'sqrt(2 * 9.81 * height)',
+                'unit_conversion': 'm/s'
+            }
+        }
+        
+        def convert_to_speed_index(exercise_name, measure, unit):
+            """Convert exercise result to predicted speed using biomechanical indices"""
+            exercise_key = None
+            for key in speed_conversion_indices.keys():
+                if key.lower() in exercise_name.lower():
+                    exercise_key = key
+                    break
+            
+            if not exercise_key:
+                # Unknown exercise, try to categorize
+                if any(word in exercise_name.lower() for word in ['skok', 'jump']):
+                    if 'daljina' in exercise_name.lower() or 'horizontal' in exercise_name.lower():
+                        exercise_key = 'skok v daljino z mesta'
+                    else:
+                        exercise_key = 'skok iz čepa'
+                elif any(word in exercise_name.lower() for word in ['šprint', 'sprint', 'štart']):
+                    exercise_key = 'šprint letečih 20m'
+                else:
+                    return measure, unit  # No conversion possible
+            
+            conversion = speed_conversion_indices[exercise_key]
+            
+            try:
+                if 'time' in unit.lower() or 'sec' in unit.lower():
+                    # Time-based exercises (sprints)
+                    if 'šprint' in exercise_key or 'štart' in exercise_key:
+                        speed_ms = conversion['coefficient'] / measure
+                        return speed_ms, 'm/s'
+                    
+                elif any(dist_unit in unit.lower() for dist_unit in ['m', 'cm', 'meter']):
+                    # Distance-based exercises (jumps)
+                    if unit.lower() == 'cm':
+                        measure_m = measure / 100.0  # Convert cm to m
+                    else:
+                        measure_m = measure
+                    
+                    if 'daljina' in exercise_key or 'troskok' in exercise_key:
+                        # Horizontal jumps - estimate horizontal velocity
+                        speed_ms = measure_m * conversion['coefficient']
+                        return speed_ms, 'm/s'
+                    else:
+                        # Vertical jumps - estimate takeoff velocity
+                        import math
+                        speed_ms = math.sqrt(2 * 9.81 * measure_m)
+                        return speed_ms, 'm/s'
+                        
+                else:
+                    # Unknown unit, return as is
+                    return measure, unit
+                    
+            except (ZeroDivisionError, ValueError, TypeError):
+                return measure, unit
+        
+        def normalize_by_motor_ability(motor_ability, measure, unit, exercise_name):
+            """Apply normalization specific to each motor ability with speed indices"""
+            
+            if motor_ability.lower() == 'hitrost':
+                # For Hitrost: convert to predicted speed (m/s) using biomechanical indices
+                speed_value, speed_unit = convert_to_speed_index(exercise_name, measure, unit)
+                
+                # Additional biomechanical scaling based on exercise type
+                if 'frekvenca' in exercise_name.lower():
+                    # Step frequency component - higher frequency = better
+                    normalized_value = speed_value
+                    normalized_unit = speed_unit
+                elif 'odriv' in exercise_name.lower():
+                    # Step power component - more power = better
+                    normalized_value = speed_value
+                    normalized_unit = speed_unit
+                else:
+                    # General speed exercise
+                    normalized_value = speed_value
+                    normalized_unit = speed_unit
+                    
+            elif motor_ability.lower() == 'moč':
+                # Power exercises: normalize by body mass^0.67 or use raw values for jumps
+                reference_body_mass = 75.0
+                
+                if any(jump_word in exercise_name.lower() for jump_word in ['skok', 'jump']):
+                    # Jumping exercises: convert to power index or keep raw
+                    if any(dist_unit in unit.lower() for dist_unit in ['m', 'cm']):
+                        # Distance-based jumps: estimate power
+                        if unit.lower() == 'cm':
+                            distance_m = measure / 100.0
+                        else:
+                            distance_m = measure
+                        # Power index: distance × body_weight × g / time²
+                        # Simplified: use distance as power indicator
+                        normalized_value = distance_m * reference_body_mass
+                        normalized_unit = "power_index"
+                    else:
+                        normalized_value = measure
+                        normalized_unit = unit
+                else:
+                    # Strength exercises: allometric scaling
+                    normalized_value = measure / (reference_body_mass ** 0.67)
+                    normalized_unit = f"{unit}/kg^0.67"
+                    
+            elif motor_ability.lower() == 'vzdržljivost':
+                # Endurance: convert time to performance score
+                if any(time_unit in unit.lower() for time_unit in ['sec', 'min', 'time']):
+                    normalized_value = 1000 / measure if measure > 0 else 0
+                    normalized_unit = "endurance_score"
+                else:
+                    normalized_value = measure
+                    normalized_unit = unit
+                    
+            elif motor_ability.lower() == 'gibljivost':
+                # Flexibility: use raw values
+                normalized_value = measure
+                normalized_unit = unit
+                
+            elif motor_ability.lower() == 'koordinacija':
+                # Coordination: depends on measure type
+                if any(time_unit in unit.lower() for time_unit in ['sec', 'time']):
+                    normalized_value = 100 / measure if measure > 0 else 0
+                    normalized_unit = "coordination_score"
+                elif 'error' in unit.lower():
+                    normalized_value = 100 - measure if measure < 100 else 0
+                    normalized_unit = "coordination_score"
+                else:
+                    normalized_value = measure
+                    normalized_unit = unit
+                    
+            else:
+                # Unknown motor ability
+                normalized_value = measure
+                normalized_unit = unit
+            
+            return normalized_value, normalized_unit
+        
+        # Group by motor ability
+        motor_ability_groups = {}
+        for item in motor_abilities_data:
+            motor_ability = item['motor_ability']
+            if motor_ability not in motor_ability_groups:
+                motor_ability_groups[motor_ability] = []
+            motor_ability_groups[motor_ability].append(item)
+        
+        normalized_results = []
+        
+        for motor_ability, exercises in motor_ability_groups.items():
+            normalized_values = []
+            units = []
+            
+            for exercise in exercises:
+                exercise_name = exercise.get('exercise_name', '')
+                measure = float(exercise['measure'])
+                unit = exercise['unit']
+                
+                # Apply motor ability specific normalization with biomechanical indices
+                normalized_value, normalized_unit = normalize_by_motor_ability(
+                    motor_ability, measure, unit, exercise_name
+                )
+                
+                normalized_values.append(normalized_value)
+                units.append(normalized_unit)
+            
+            if normalized_values:
+                # Calculate representative value
+                if motor_ability.lower() == 'hitrost':
+                    # For speed: higher m/s = better performance
+                    representative_value = sum(normalized_values) / len(normalized_values)
+                    precision = 2
+                elif motor_ability.lower() == 'moč':
+                    # For power: higher values = better
+                    representative_value = sum(normalized_values) / len(normalized_values)
+                    precision = 2
+                else:
+                    representative_value = sum(normalized_values) / len(normalized_values)
+                    precision = 1
+                
+                most_common_unit = max(set(units), key=units.count) if units else 'units'
+                
+                normalized_results.append({
+                    'motor_ability': motor_ability,
+                    'measure': round(representative_value, precision),
+                    'unit': most_common_unit,
+                    'exercise_count': len(exercises)
+                })
+        
+        return normalized_results
+    
+    @staticmethod
+    def get_motor_ability_analytics_by_athlete(trainer_id, athlete_id):
+        """Get normalized motor ability analytics for Slovenian motor abilities"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # First verify the athlete belongs to the trainer
+            athlete_check_query = """
+                SELECT COUNT(*) as count
+                FROM trainers_athletes ta
+                JOIN users u ON ta.athlete_id = u.id
+                WHERE ta.trainer_id = :1 AND ta.athlete_id = :2 AND u.role = 1
+            """
+            cursor.execute(athlete_check_query, [trainer_id, athlete_id])
+            result = cursor.fetchone()
+            
+            if result[0] == 0:
+                raise Exception("Športnik ni dodeljen temu trenerju ali ne obstaja")
+            
+            log_with_unicode(f"✓ Športnik {athlete_id} pripada trenerju {trainer_id}")
+            
+            # Get all tests for this athlete and trainer, sorted by test_date
+            all_tests_query = """
+                SELECT id, test_date
+                FROM tests
+                WHERE athlete_id = :1 AND trainer_id = :2
+                ORDER BY TO_DATE(test_date, 'DD-MON-RR') ASC, id ASC
+            """
+            
+            cursor.execute(all_tests_query, [athlete_id, trainer_id])
+            tests_data = cursor.fetchall()
+            
+            log_with_unicode(f"✓ Najdenih {len(tests_data)} testov za športnika {athlete_id}")
+            
+            tests = []
+            for test_data in tests_data:
+                current_test_id = test_data[0]
+                current_test_date = test_data[1]
+                
+                # Get motor abilities with exercise names for proper normalization
+                motor_abilities_query = """
+                    SELECT 
+                        ma.motor_ability,
+                        et.measure,
+                        et.unit,
+                        e.exercise as exercise_name
+                    FROM exercises_tests et
+                    JOIN exercises e ON et.exercise_id = e.id
+                    JOIN methods m ON e.method_id = m.id
+                    JOIN motor_abilities ma ON m.motor_ability_id = ma.id
+                    WHERE et.test_id = :1
+                    ORDER BY ma.motor_ability, e.exercise
+                """
+                
+                cursor.execute(motor_abilities_query, [current_test_id])
+                motor_abilities_data = cursor.fetchall()
+                
+                # Convert to list of dictionaries
+                raw_data = []
+                for row in motor_abilities_data:
+                    raw_data.append({
+                        'motor_ability': row[0],
+                        'measure': row[1],
+                        'unit': row[2],
+                        'exercise_name': row[3]
+                    })
+                
+                # Apply Slovenian motor ability normalization
+                normalized_motor_abilities = TrainerManager.normalize_motor_ability_values(raw_data)
+                
+                test_obj = {
+                    'id': current_test_id,
+                    'test_date': current_test_date,
+                    'motor_abilities': normalized_motor_abilities
+                }
+                tests.append(test_obj)
+            
+            cursor.close()
+            connection.close()
+            
+            result = {
+                'athlete_id': athlete_id,
+                'total_tests': len(tests),
+                'tests': tests
+            }
+            
+            log_with_unicode(f"✓ Normalizirana analitika za slovenske motorične sposobnosti pripravljena")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju analitike motoričnih sposobnosti: {e}")
+            raise
 
     @staticmethod
     def delete_periodization(trainer_id, periodization_id):
