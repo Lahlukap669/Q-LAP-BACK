@@ -21,20 +21,19 @@ class DatabaseManager:
         """Get connection through QuotaGuard Static"""
         try:
             if self.quotaguard_url:
-                # Parse QuotaGuard URL and use proxy
-                # Implementation depends on QuotaGuard's specific setup
                 log_with_unicode("✓ Using QuotaGuard Static for DB connection")
             
             connection = oracledb.connect(
                 user=self.user,
                 password=self.password,
-                dsn=self.dsn,
-                timeout=30  # Add connection timeout
+                dsn=self.dsn
+                # Remove timeout=30 - not supported by oracledb.connect()
             )
             return connection
         except Exception as e:
             log_with_unicode(f"✗ Database connection error: {e}")
             raise
+
 
     def execute_query(self, query: str, params=None) -> list:
         """Execute SELECT query with Unicode handling"""
