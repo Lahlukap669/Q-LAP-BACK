@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g, make_response
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from flask_bcrypt import Bcrypt  # ← ADD THIS BACK
 from flask_restx import Api, Resource, fields, Namespace
@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from datetime import timedelta
 import os
 
-from auth import UserManager, TrainerManager, PeriodizationManager
+from auth import UserManager, TrainerManager, PeriodizationManager, AthleteManager
 from decorators import role_required, ADMIN, ATHLETE, TRAINER
 from utils import create_json_response, sanitize_input, log_with_unicode
 
@@ -17,9 +17,18 @@ load_dotenv()
 app = Flask(__name__)
 
 # Add CORS configuration
-CORS(app, origins=['http://localhost:5173'],
-     methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-     allow_headers=['Content-Type', 'Authorization'])
+CORS(app, 
+     origins=[
+         'http://localhost:5173',
+         'http://ulicar.si',
+         'http://qlap-flaskapi.ddns.net'
+     ],
+     supports_credentials=True,
+     allow_headers=['Content-Type', 'Authorization'],
+     methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],  # Include OPTIONS
+     expose_headers=['Content-Type', 'Authorization'])
+
+
 
 # Configuration for Unicode support
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
@@ -383,9 +392,63 @@ microcycle_info_response_model = api.model('MikrociklInformacijeOdgovor', {
     'microcycle_info': fields.Nested(microcycle_info_model, description='Podrobne informacije o mikrociklu')
 })
 
+athlete_microcycle_request_model = api.model('SportnikMikrociklInfo', {
+    'current_date': fields.String(description='Trenutni datum (YYYY-MM-DD), optional - default today', example='2025-06-16')
+})
 
+athlete_microcycle_response_model = api.model('SportnikMikrociklInfoOdgovor', {
+    'message': fields.String(description='Sporočilo', example='Informacije o mikrociklu uspešno pridobljene'),
+    'athlete_id': fields.Integer(description='ID športnika', example=25),
+    'current_date': fields.String(description='Datum', example='2025-06-16'),
+    'day_of_week_number': fields.Integer(description='Številka dneva v tednu', example=1),
+    'microcycle_id': fields.Integer(description='ID mikrocikla', example=589),
+    'active_rest': fields.Boolean(description='Ali je aktiven počitek', example=False),
+    'methods': fields.List(fields.Nested(method_info_model), description='Seznam metod za ta dan')
+})
 
-# ADD THIS - Error response model
+exercise_status_model = api.model('StanjeVaje', {
+    'exercise_id': fields.Integer(required=True, description='ID vaje', example=123),
+    'finished': fields.Boolean(required=True, description='Ali je vaja končana', example=True)
+})
+
+save_finished_exercises_model = api.model('ShraniKoncaneVaje', {
+    'microcycle_id': fields.Integer(required=True, description='ID mikrocikla', example=589),
+    'day_of_week_number': fields.Integer(required=True, description='Številka dneva v tednu (1-7)', example=1),
+    'exercises_status': fields.List(fields.Nested(exercise_status_model), required=True, description='Seznam vaj s statusom')
+})
+
+save_finished_exercises_response_model = api.model('ShraniKoncaneVajeOdgovor', {
+    'message': fields.String(description='Sporočilo o uspešnosti', example='Uspešno posodobljenih 3 vaj'),
+    'updated_exercises': fields.Integer(description='Število posodobljenih vaj', example=3),
+    'failed_exercises': fields.List(fields.String, description='Seznam neuspešnih posodobitev', example=[])
+})
+
+athlete_test_info_model = api.model('SportnikInformacijeTest', {
+    'id': fields.Integer(description='ID testa', example=15),
+    'test_date': fields.String(description='Datum testa', example='2025-06-01'),
+    'trainer_full_name': fields.String(description='Polno ime trenerja', example='Marko Kovač')
+})
+
+athlete_tests_list_model = api.model('SportnikSeznamTestov', {
+    'message': fields.String(description='Sporočilo', example='Testi uspešno pridobljeni'),
+    'tests': fields.List(fields.Nested(athlete_test_info_model), description='Seznam testov'),
+    'count': fields.Integer(description='Število testov', example=5)
+})
+
+athlete_test_analytics_response_model = api.model('SportnikTestAnalitikaOdgovor', {
+    'message': fields.String(description='Sporočilo', example='Test analitika uspešno pridobljena'),
+    'athlete_id': fields.Integer(description='ID športnika', example=25),
+    'total_tests': fields.Integer(description='Skupno število testov', example=5),
+    'tests': fields.List(fields.Nested(test_analytics_model), description='Seznam vseh testov z vajami')
+})
+
+athlete_motor_ability_analytics_response_model = api.model('SportnikMotoricneSposobnostiAnalitikaOdgovor', {
+    'message': fields.String(description='Sporočilo', example='Analitika motoričnih sposobnosti uspešno pridobljena'),
+    'athlete_id': fields.Integer(description='ID športnika', example=25),
+    'total_tests': fields.Integer(description='Skupno število testov', example=3),
+    'tests': fields.List(fields.Nested(test_motor_ability_analytics_test_model), description='Seznam vseh testov z motoričnimi sposobnostmi')
+})
+
 error_response_model = api.model('NapakaOdgovor', {
     'message': fields.String(description='Sporočilo o napaki', example='Neveljavni podatki')
 })
@@ -661,6 +724,8 @@ class TrainerPeriodizations(Resource):
     def get(self):
         """Pridobi vse periodizacije za trenutnega trenerja"""
         try:
+            print(f"Authorization header: {request.headers.get('Authorization')}")
+            print(f"All headers: {dict(request.headers)}")
             current_user_id = int(get_jwt_identity())
             
             # Verify user exists and is a trainer
@@ -1179,7 +1244,7 @@ class TrainerGetMotorAbilityAnalytics(Resource):
                 }, 500)
 
 
-@user_ns.route('/trainer/get-test-exercises')
+@user_ns.route('/users/athlete/get-test-exercises')
 class TrainerGetTestExercises(Resource):
     @auth_ns.doc(security='Bearer')
     @auth_ns.response(200, 'Testne vaje uspešno pridobljene', test_exercises_list_model)
@@ -1209,6 +1274,131 @@ class TrainerGetTestExercises(Resource):
             return create_json_response(app, {
                 'message': 'Napaka pri pridobivanju testnih vaj'
             }, 500)
+
+@user_ns.route('/users/trainer/get-test-exercises')
+class TrainerGetTestExercises(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Testne vaje uspešno pridobljene', test_exercises_list_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo trenerji imajo dostop')
+    @role_required(TRAINER)
+    def get(self):
+        """Pridobi vse testne vaje razvrščene po motoričnih sposobnostih in skupinah metod"""
+        try:
+            # Get structured test exercises
+            structured_exercises = TrainerManager.get_test_exercises()
+            
+            # Count total exercises
+            total_exercises = 0
+            for motor_ability in structured_exercises:
+                for method_group in motor_ability['method_groups']:
+                    total_exercises += len(method_group['exercises'])
+            
+            return create_json_response(app, {
+                'message': 'Testne vaje uspešno pridobljene',
+                'data': structured_exercises,
+                'total_exercises': total_exercises
+            }, 200)
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju testnih vaj: {e}")
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju testnih vaj'
+            }, 500)
+
+@user_ns.route('/athlete/save-finished-exercises')
+class AthleteSaveFinishedExercises(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(save_finished_exercises_model, validate=True)
+    @auth_ns.response(200, 'Stanje vaj uspešno shranjeno', save_finished_exercises_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo športniki imajo dostop')
+    @auth_ns.response(404, 'Mikrocikel ni najden ali ne pripada športniku')
+    @role_required(ATHLETE)
+    def post(self):
+        """Shrani stanje končanih vaj za določen dan mikrocikla"""
+        try:
+            current_athlete_id = int(get_jwt_identity())
+            data = request.get_json()
+            
+            # Validate required fields
+            microcycle_id = data.get('microcycle_id')
+            day_of_week_number = data.get('day_of_week_number')
+            exercises_status = data.get('exercises_status')
+            
+            if not microcycle_id or not day_of_week_number or not exercises_status:
+                return create_json_response(app, {
+                    'message': 'Vsi podatki (microcycle_id, day_of_week_number, exercises_status) so obvezni'
+                }, 400)
+            
+            # Validate microcycle_id
+            if not isinstance(microcycle_id, int) or microcycle_id <= 0:
+                return create_json_response(app, {
+                    'message': 'ID mikrocikla mora biti pozitivno celo število'
+                }, 400)
+            
+            # Validate day_of_week_number
+            if not isinstance(day_of_week_number, int) or day_of_week_number < 1 or day_of_week_number > 7:
+                return create_json_response(app, {
+                    'message': 'Številka dneva v tednu mora biti med 1 in 7'
+                }, 400)
+            
+            # Validate exercises_status list
+            if not isinstance(exercises_status, list) or len(exercises_status) == 0:
+                return create_json_response(app, {
+                    'message': 'Seznam vaj ne sme biti prazen'
+                }, 400)
+            
+            # Validate each exercise status
+            for i, exercise_status in enumerate(exercises_status):
+                if not isinstance(exercise_status, dict):
+                    return create_json_response(app, {
+                        'message': f'Vaja {i+1} mora biti objekt'
+                    }, 400)
+                
+                if 'exercise_id' not in exercise_status or 'finished' not in exercise_status:
+                    return create_json_response(app, {
+                        'message': f'Vaja {i+1} mora vsebovati exercise_id in finished'
+                    }, 400)
+                
+                if not isinstance(exercise_status['exercise_id'], int) or exercise_status['exercise_id'] <= 0:
+                    return create_json_response(app, {
+                        'message': f'ID vaje {i+1} mora biti pozitivno celo število'
+                    }, 400)
+                
+                if not isinstance(exercise_status['finished'], bool):
+                    return create_json_response(app, {
+                        'message': f'Finished status vaje {i+1} mora biti boolean'
+                    }, 400)
+            
+            # Save finished exercises
+            result = AthleteManager.save_finished_exercises(
+                current_athlete_id, 
+                microcycle_id, 
+                day_of_week_number, 
+                exercises_status
+            )
+            
+            return create_json_response(app, {
+                'message': result['message'],
+                'updated_exercises': result['updated_exercises'],
+                'failed_exercises': result['failed_exercises']
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri shranjevanju stanja vaj: {error_message}")
+            
+            if "ne pripada temu športniku" in error_message:
+                return create_json_response(app, {
+                    'message': error_message
+                }, 404)
+            else:
+                return create_json_response(app, {
+                    'message': 'Napaka pri shranjevanju stanja vaj'
+                }, 500)
+
 
 
 @user_ns.route('/trainer/create-test')
@@ -1309,6 +1499,192 @@ class TrainerCreateTest(Resource):
                 return create_json_response(app, {
                     'message': 'Napaka pri ustvarjanju testa'
                 }, 500)
+
+@user_ns.route('/athlete/get-test-analytics')
+class AthleteGetTestAnalytics(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Test analitika uspešno pridobljena', athlete_test_analytics_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo športniki imajo dostop')
+    @auth_ns.response(404, 'Športnik ni najden')
+    @role_required(ATHLETE)
+    def get(self):
+        """Pridobi analitiko vseh testov trenutnega športnika"""
+        try:
+            current_athlete_id = int(get_jwt_identity())
+            
+            # Verify athlete exists
+            athlete = UserManager.get_user_by_id(current_athlete_id)
+            if not athlete:
+                return create_json_response(app, {'message': 'Športnik ni najden'}, 404)
+            
+            # Get test analytics for athlete
+            analytics = AthleteManager.get_test_analytics(current_athlete_id)
+            
+            return create_json_response(app, {
+                'message': 'Test analitika uspešno pridobljena',
+                'athlete_id': analytics['athlete_id'],
+                'total_tests': analytics['total_tests'],
+                'tests': analytics['tests']
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri pridobivanju test analitike: {error_message}")
+            
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju test analitike'
+            }, 500)
+
+@user_ns.route('/athlete/get-motor-ability-analytics')
+class AthleteGetMotorAbilityAnalytics(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Analitika motoričnih sposobnosti uspešno pridobljena', athlete_motor_ability_analytics_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo športniki imajo dostop')
+    @auth_ns.response(404, 'Športnik ni najden')
+    @role_required(ATHLETE)
+    def get(self):
+        """Pridobi analitiko motoričnih sposobnosti za vse teste trenutnega športnika"""
+        try:
+            current_athlete_id = int(get_jwt_identity())
+            
+            # Verify athlete exists
+            athlete = UserManager.get_user_by_id(current_athlete_id)
+            if not athlete:
+                return create_json_response(app, {'message': 'Športnik ni najden'}, 404)
+            
+            # Get motor ability analytics for athlete
+            analytics = AthleteManager.get_motor_ability_analytics(current_athlete_id)
+            
+            return create_json_response(app, {
+                'message': 'Analitika motoričnih sposobnosti uspešno pridobljena',
+                'athlete_id': analytics['athlete_id'],
+                'total_tests': analytics['total_tests'],
+                'tests': analytics['tests']
+            }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri pridobivanju analitike motoričnih sposobnosti: {error_message}")
+            
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju analitike motoričnih sposobnosti'
+            }, 500)
+
+
+@user_ns.route('/athlete/get-tests')
+class AthleteGetTests(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.response(200, 'Testi uspešno pridobljeni', athlete_tests_list_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo športniki imajo dostop')
+    @auth_ns.response(404, 'Športnik ni najden')
+    @role_required(ATHLETE)
+    def get(self):
+        """Pridobi vse teste trenutnega športnika"""
+        try:
+            current_athlete_id = int(get_jwt_identity())
+            
+            # Verify athlete exists
+            athlete = UserManager.get_user_by_id(current_athlete_id)
+            if not athlete:
+                return create_json_response(app, {'message': 'Športnik ni najden'}, 404)
+            
+            # Get athlete's tests
+            tests = AthleteManager.get_tests(current_athlete_id)
+            
+            return create_json_response(app, {
+                'message': 'Testi uspešno pridobljeni',
+                'tests': tests,
+                'count': len(tests)
+            }, 200)
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju testov: {e}")
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju testov'
+            }, 500)
+
+@user_ns.route('/athlete/microcycle-info')
+class AthleteGetMicrocycleInfo(Resource):
+    @auth_ns.doc(security='Bearer')
+    @auth_ns.expect(athlete_microcycle_request_model)
+    @auth_ns.response(200, 'Informacije o mikrociklu uspešno pridobljene', athlete_microcycle_response_model)
+    @auth_ns.response(400, 'Neveljavni podatki', error_response_model)
+    @auth_ns.response(401, 'Žeton je obvezen')
+    @auth_ns.response(403, 'Samo športniki imajo dostop')
+    @auth_ns.response(404, 'Datum ni znotraj nobene periodizacije')
+    @role_required(ATHLETE)
+    def post(self):
+        """Pridobi informacije o mikrociklu za trenutni dan športnika"""
+        try:
+            current_athlete_id = int(get_jwt_identity())
+            data = request.get_json() or {}
+            
+            # Get current date from request or use today
+            current_date = data.get('current_date')
+            
+            # Validate date format if provided
+            if current_date:
+                try:
+                    from datetime import datetime
+                    datetime.strptime(current_date, '%Y-%m-%d')
+                except ValueError:
+                    return create_json_response(app, {
+                        'message': 'Neveljaven datum. Uporabite format YYYY-MM-DD'
+                    }, 400)
+            
+            # Get microcycle info for athlete
+            microcycle_info = AthleteManager.get_athlete_microcycle_info(current_athlete_id, current_date)
+            
+            # Handle different scenarios
+            if not microcycle_info['within_periodization']:
+                # Date is not within any periodization - return 404
+                return create_json_response(app, {
+                    'message': 'Datum ni znotraj nobene periodizacije',
+                    'athlete_id': microcycle_info['athlete_id'],
+                    'current_date': microcycle_info['current_date'],
+                    'day_of_week_number': microcycle_info['day_of_week_number']
+                }, 404)
+            
+            elif microcycle_info['microcycle_id'] is None:
+                # Within periodization but no exercises for this day - return 200 with empty methods
+                return create_json_response(app, {
+                    'message': 'Znotraj periodizacije, a ni vaj za ta dan',
+                    'athlete_id': microcycle_info['athlete_id'],
+                    'current_date': microcycle_info['current_date'],
+                    'day_of_week_number': microcycle_info['day_of_week_number'],
+                    'within_periodization': True,
+                    'periodization_id': microcycle_info.get('periodization_id'),
+                    'periodization_name': microcycle_info.get('periodization_name'),
+                    'microcycle_id': None,
+                    'methods': []
+                }, 200)
+            
+            else:
+                # Normal case - exercises found
+                return create_json_response(app, {
+                    'message': 'Informacije o mikrociklu uspešno pridobljene',
+                    'athlete_id': microcycle_info['athlete_id'],
+                    'current_date': microcycle_info['current_date'],
+                    'day_of_week_number': microcycle_info['day_of_week_number'],
+                    'within_periodization': True,
+                    'periodization_id': microcycle_info.get('periodization_id'),
+                    'periodization_name': microcycle_info.get('periodization_name'),
+                    'microcycle_id': microcycle_info['microcycle_id'],
+                    'active_rest': microcycle_info['active_rest'],
+                    'methods': microcycle_info['methods']
+                }, 200)
+            
+        except Exception as e:
+            error_message = str(e)
+            log_with_unicode(f"✗ Napaka pri pridobivanju informacij o mikrociklu: {error_message}")
+            
+            return create_json_response(app, {
+                'message': 'Napaka pri pridobivanju informacij o mikrociklu'
+            }, 500)
+
 
 @user_ns.route('/trainer/get-tests')
 class TrainerGetTests(Resource):
@@ -1488,4 +1864,4 @@ if __name__ == '__main__':
     log_with_unicode("🚀 Zaganjam Q-LAP API strežnik...")
     log_with_unicode("📚 Swagger dokumentacija: http://localhost:5000/docs/")
     log_with_unicode("🏥 Preverjanje zdravja: http://localhost:5000/api/health")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000,debug=True)

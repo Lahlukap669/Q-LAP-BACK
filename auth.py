@@ -1730,4 +1730,753 @@ class TrainerManager:
             
         except Exception as e:
             log_with_unicode(f"✗ Napaka pri pridobivanju metod: {e}")
-            raise Exception(f"Napaka pri pridobivanju metod: {str(e)}")
+            raise Exception(f"Napaka pri pridobivanju metod: {str(e)}") 
+
+class AthleteManager:
+    def get_athlete_microcycle_info(athlete_id, current_date=None):
+        """Get detailed microcycle information for athlete's current day"""
+        try:
+            import math
+            from datetime import datetime, date
+            
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # Use current date if not provided
+            if current_date is None:
+                current_date = date.today()
+            elif isinstance(current_date, str):
+                current_date = datetime.strptime(current_date, '%Y-%m-%d').date()
+            
+            # Calculate day of week number (1=Monday, 7=Sunday)
+            day_of_week_number = current_date.weekday() + 1
+            
+            log_with_unicode(f"🔍 Searching for microcycle for athlete {athlete_id} on {current_date} (day {day_of_week_number})")
+            
+            # STEP 1: Check if the date is within any periodization for this athlete
+            periodization_check_query = """
+                SELECT 
+                    p.id,
+                    p.periodization_name,
+                    p.date_from,
+                    p.date_to
+                FROM periodizations p
+                WHERE p.athlete_id = :1
+                AND CAST(p.date_from AS DATE) <= :2
+                AND CAST(p.date_to AS DATE) >= :3
+                ORDER BY p.id DESC
+            """
+            
+            cursor.execute(periodization_check_query, [athlete_id, current_date, current_date])
+            periodization_data = cursor.fetchone()
+            
+            if not periodization_data:
+                log_with_unicode(f"✗ Date {current_date} is not within any periodization for athlete {athlete_id}")
+                return {
+                    'athlete_id': athlete_id,
+                    'current_date': current_date.strftime('%Y-%m-%d'),
+                    'day_of_week_number': day_of_week_number,
+                    'microcycle_id': None,
+                    'within_periodization': False,
+                    'methods': []
+                }
+            
+            periodization_id = periodization_data[0]
+            periodization_name = periodization_data[1]
+            log_with_unicode(f"✓ Date {current_date} is within periodization '{periodization_name}' (ID: {periodization_id})")
+            
+            # STEP 2: Try to find the microcycle that contains this date for the athlete
+            microcycle_query = """
+                SELECT DISTINCT mc.id, mc.active_rest
+                FROM microcycles mc
+                JOIN mesocycles ms ON mc.mesocycle_id = ms.id
+                JOIN periodizations p ON ms.periodization_id = p.id
+                JOIN exercises_microcycles em ON mc.id = em.microcycle_id
+                WHERE p.athlete_id = :1
+                AND em.exercise_date = :2
+                AND em.day_of_week_number = :3
+                ORDER BY mc.id DESC
+            """
+            
+            cursor.execute(microcycle_query, [athlete_id, current_date, day_of_week_number])
+            microcycle_data = cursor.fetchone()
+            
+            if not microcycle_data:
+                log_with_unicode(f"⚠️ No exercises found for athlete {athlete_id} on {current_date}, but date is within periodization")
+                return {
+                    'athlete_id': athlete_id,
+                    'current_date': current_date.strftime('%Y-%m-%d'),
+                    'day_of_week_number': day_of_week_number,
+                    'microcycle_id': None,
+                    'within_periodization': True,
+                    'periodization_id': periodization_id,
+                    'periodization_name': periodization_name,
+                    'active_rest': None,
+                    'methods': []
+                }
+            
+            microcycle_id = microcycle_data[0]
+            active_rest = bool(microcycle_data[1]) if microcycle_data[1] is not None else False
+            
+            log_with_unicode(f"✓ Found microcycle {microcycle_id} for athlete {athlete_id}")
+            
+            # STEP 3: Get methods for the microcycle on specified day (same logic as before)
+            methods_query = """
+                SELECT DISTINCT
+                    m.id AS method_id,
+                    m.method_name,
+                    m.method_group,
+                    m.sets,
+                    m.repetitions,
+                    m.burden_percentage_of_MVC,
+                    m.VO2MAX,
+                    m.HRPERCENTAGE,
+                    m.rest_seconds,
+                    m.duration_min,
+                    m.contraction_type,
+                    m.tempo,
+                    m.motor_ability_id,
+                    ma.motor_ability
+                FROM methods m
+                JOIN exercises e ON m.id = e.method_id
+                JOIN exercises_microcycles em ON e.id = em.exercise_id
+                JOIN motor_abilities ma ON m.motor_ability_id = ma.id
+                WHERE em.microcycle_id = :1
+                    AND em.day_of_week_number = :2
+                ORDER BY m.id
+            """
+            
+            cursor.execute(methods_query, [microcycle_id, day_of_week_number])
+            methods_data = cursor.fetchall()
+            
+            methods = []
+            for method_data in methods_data:
+                method_id = method_data[0]
+                
+                # Get exercises for this method on the specified day
+                exercises_query = """
+                    SELECT 
+                        em.exercise_date,
+                        em.day_of_week_number,
+                        e.id AS exercise_id,
+                        e.exercise AS exercise_name,
+                        SUBSTR(e.description, 1, 4000) AS description,
+                        e.video_url,
+                        e.difficulty,
+                        em.exercise_finished,
+                        TO_CHAR(em.exercise_date, 'Day') AS day_of_week_name
+                    FROM exercises_microcycles em
+                    JOIN exercises e ON em.exercise_id = e.id
+                    WHERE em.microcycle_id = :1
+                        AND e.method_id = :2
+                        AND em.day_of_week_number = :3
+                    ORDER BY em.exercise_date, em.id
+                """
+                
+                cursor.execute(exercises_query, [microcycle_id, method_id, day_of_week_number])
+                exercises_data = cursor.fetchall()
+                
+                exercises = []
+                for exercise_data in exercises_data:
+                    exercise_obj = {
+                        'exercise_date': exercise_data[0].strftime('%Y-%m-%d') if exercise_data[0] else None,
+                        'day_of_week_number': exercise_data[1],
+                        'exercise_id': exercise_data[2],
+                        'exercise_name': exercise_data[3],
+                        'description': exercise_data[4],
+                        'video_url': exercise_data[5],
+                        'difficulty': exercise_data[6],
+                        'exercise_finished': bool(exercise_data[7]) if exercise_data[7] is not None else False,
+                        'day_of_week_name': exercise_data[8].strip() if exercise_data[8] else None
+                    }
+                    exercises.append(exercise_obj)
+                
+                # Helper function to handle None values in calculations
+                def safe_math_operation(value, operation_func, default=None):
+                    """Safely perform math operations, handling None values"""
+                    if value is not None:
+                        return operation_func(value)
+                    return default
+                
+                # Build method object with None-safe calculations
+                method_obj = {
+                    'method_id': method_data[0],
+                    'method_name': method_data[1],
+                    'method_group': method_data[2],
+                    'method_parameters': {
+                        'sets': safe_math_operation(
+                            method_data[3], 
+                            lambda x: math.floor(x/2) if active_rest else x,
+                            method_data[3]
+                        ),
+                        'repetitions': method_data[4],
+                        'burden_percentage_of_mvc': safe_math_operation(
+                            method_data[5],
+                            lambda x: math.floor(x-10) if active_rest else x,
+                            method_data[5]
+                        ),
+                        'vo2_max': safe_math_operation(
+                            method_data[6],
+                            lambda x: math.floor(x-10) if active_rest else x,
+                            method_data[6]
+                        ),
+                        'hr_percentage': safe_math_operation(
+                            method_data[7],
+                            lambda x: math.floor(x-10) if active_rest else x,
+                            method_data[7]
+                        ),
+                        'rest_seconds': method_data[8],
+                        'duration_min': method_data[9],
+                        'contraction_type': method_data[10],
+                        'tempo': method_data[11]
+                    },
+                    'motor_ability_id': method_data[12],
+                    'motor_ability': method_data[13],
+                    'exercises': exercises
+                }
+                
+                methods.append(method_obj)
+            
+            cursor.close()
+            connection.close()
+            
+            result = {
+                'athlete_id': athlete_id,
+                'current_date': current_date.strftime('%Y-%m-%d'),
+                'day_of_week_number': day_of_week_number,
+                'microcycle_id': microcycle_id,
+                'within_periodization': True,
+                'periodization_id': periodization_id,
+                'periodization_name': periodization_name,
+                'active_rest': active_rest,
+                'methods': methods
+            }
+            
+            log_with_unicode(f"✓ Pridobljene informacije za športnika {athlete_id}, dan {day_of_week_number}")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju informacij o mikrociklu za športnika {athlete_id}: {e}")
+            raise Exception(f"Napaka pri pridobivanju informacij o mikrociklu: {str(e)}")
+    
+    
+    @staticmethod
+    def save_finished_exercises(athlete_id, microcycle_id, day_of_week_number, exercises_status):
+        """Save finished status for exercises in athlete's microcycle"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # First verify that the microcycle belongs to this athlete
+            microcycle_check_query = """
+                SELECT COUNT(*) as count
+                FROM microcycles mc
+                JOIN mesocycles ms ON mc.mesocycle_id = ms.id
+                JOIN periodizations p ON ms.periodization_id = p.id
+                WHERE mc.id = :1 AND p.athlete_id = :2
+            """
+            cursor.execute(microcycle_check_query, [microcycle_id, athlete_id])
+            result = cursor.fetchone()
+            
+            if result[0] == 0:
+                raise Exception(f"Mikrocikel z ID {microcycle_id} ne pripada temu športniku")
+            
+            log_with_unicode(f"✓ Mikrocikel {microcycle_id} pripada športniku {athlete_id}")
+            
+            # Update exercise finished status for each exercise
+            updated_exercises = 0
+            failed_exercises = []
+            
+            for exercise_status in exercises_status:
+                exercise_id = exercise_status.get('exercise_id')
+                finished = exercise_status.get('finished', False)
+                
+                if exercise_id is None:
+                    failed_exercises.append("Missing exercise_id")
+                    continue
+                
+                try:
+                    # Update the exercise_finished status
+                    update_query = """
+                        UPDATE exercises_microcycles 
+                        SET exercise_finished = :1
+                        WHERE microcycle_id = :2 
+                          AND day_of_week_number = :3 
+                          AND exercise_id = :4
+                    """
+                    
+                    cursor.execute(update_query, [
+                        1 if finished else 0,  # Convert boolean to number for Oracle
+                        microcycle_id,
+                        day_of_week_number,
+                        exercise_id
+                    ])
+                    
+                    rows_affected = cursor.rowcount
+                    if rows_affected > 0:
+                        updated_exercises += 1
+                        status_text = "končana" if finished else "nezačeta"
+                        log_with_unicode(f"✓ Vaja {exercise_id} označena kot {status_text}")
+                    else:
+                        failed_exercises.append(f"Exercise {exercise_id} not found in microcycle")
+                        log_with_unicode(f"⚠️ Vaja {exercise_id} ni najdena v mikrociklu")
+                        
+                except Exception as e:
+                    failed_exercises.append(f"Exercise {exercise_id}: {str(e)}")
+                    log_with_unicode(f"✗ Napaka pri posodabljanju vaje {exercise_id}: {e}")
+            
+            # Commit all changes
+            connection.commit()
+            cursor.close()
+            connection.close()
+            
+            # Prepare response message
+            if updated_exercises > 0 and len(failed_exercises) == 0:
+                success_message = f"Uspešno posodobljenih {updated_exercises} vaj"
+            elif updated_exercises > 0 and len(failed_exercises) > 0:
+                success_message = f"Uspešno posodobljenih {updated_exercises} vaj, {len(failed_exercises)} napak"
+            else:
+                raise Exception(f"Nobena vaja ni bila posodobljena. Napake: {'; '.join(failed_exercises)}")
+            
+            log_with_unicode(f"✓ {success_message}")
+            
+            return {
+                'updated_exercises': updated_exercises,
+                'failed_exercises': failed_exercises,
+                'message': success_message
+            }
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri shranjevanju stanja vaj: {e}")
+            raise
+    
+    @staticmethod
+    def get_tests(athlete_id):
+        """Get all tests for a specific athlete"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            # Handle test_date as string in DD-MON-RR format, convert to YYYY-MM-DD
+            tests_query = """
+                SELECT
+                    t.id,
+                    TO_CHAR(TO_DATE(t.test_date, 'DD-MON-RR'), 'YYYY-MM-DD') as formatted_date,
+                    u.first_name,
+                    u.last_name
+                FROM tests t
+                JOIN users u ON t.trainer_id = u.id
+                WHERE t.athlete_id = :1
+                ORDER BY TO_DATE(t.test_date, 'DD-MON-RR') DESC, t.id DESC
+            """
+            
+            cursor.execute(tests_query, [athlete_id])
+            tests_data = cursor.fetchall()
+            
+            tests = []
+            for test_data in tests_data:
+                test_obj = {
+                    'id': test_data[0],
+                    'test_date': test_data[1],  # Already formatted as YYYY-MM-DD string from Oracle
+                    'trainer_full_name': f"{test_data[2]} {test_data[3]}" if test_data[2] and test_data[3] else None
+                }
+                tests.append(test_obj)
+            
+            cursor.close()
+            connection.close()
+            
+            log_with_unicode(f"✓ Pridobljenih {len(tests)} testov za športnika {athlete_id}")
+            return tests
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju testov za športnika {athlete_id}: {e}")
+            raise Exception(f"Napaka pri pridobivanju testov: {str(e)}")
+
+
+    @staticmethod
+    def get_test_analytics(athlete_id):
+        """Get test analytics for all tests of the athlete (from all trainers)"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            log_with_unicode(f"✓ Getting test analytics for athlete {athlete_id}")
+            
+            # Get all tests for this athlete from all trainers, sorted by test_date
+            # Convert string date to proper DATE, then format it
+            all_tests_query = """
+                SELECT 
+                    id, 
+                    TO_CHAR(TO_DATE(test_date, 'DD-MON-RR'), 'YYYY-MM-DD') as formatted_date
+                FROM tests
+                WHERE athlete_id = :1
+                ORDER BY TO_DATE(test_date, 'DD-MON-RR') ASC, id ASC
+            """
+            
+            cursor.execute(all_tests_query, [athlete_id])
+            tests_data = cursor.fetchall()
+            
+            log_with_unicode(f"✓ Najdenih {len(tests_data)} testov za športnika {athlete_id}")
+            
+            tests = []
+            for test_data in tests_data:
+                current_test_id = test_data[0]
+                current_test_date = test_data[1]  # Already formatted as YYYY-MM-DD string from Oracle
+                
+                # Get exercises for this test
+                exercises_query = """
+                    SELECT 
+                        e.exercise,
+                        et.measure,
+                        et.unit
+                    FROM exercises_tests et
+                    JOIN exercises e ON et.exercise_id = e.id
+                    WHERE et.test_id = :1
+                    ORDER BY e.exercise
+                """
+                
+                cursor.execute(exercises_query, [current_test_id])
+                exercises_data = cursor.fetchall()
+                
+                exercises = []
+                for exercise_data in exercises_data:
+                    exercise_obj = {
+                        'exercise': exercise_data[0],
+                        'measure': float(exercise_data[1]),  # Ensure proper number format
+                        'unit': exercise_data[2]
+                    }
+                    exercises.append(exercise_obj)
+                
+                test_obj = {
+                    'id': current_test_id,
+                    'test_date': current_test_date,  # Already formatted as YYYY-MM-DD string
+                    'exercises': exercises
+                }
+                tests.append(test_obj)
+            
+            cursor.close()
+            connection.close()
+            
+            result = {
+                'athlete_id': athlete_id,
+                'total_tests': len(tests),
+                'tests': tests
+            }
+            
+            log_with_unicode(f"✓ Test analitika pripravljena za {len(tests)} testov športnika {athlete_id}")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju test analitike za športnika {athlete_id}: {e}")
+            raise Exception(f"Napaka pri pridobivanju test analitike: {str(e)}")
+
+    @staticmethod
+    def normalize_motor_ability_values(motor_abilities_data):
+        """Normalize test exercises using biomechanical indices for speed prediction"""
+        
+        # Biomechanical conversion coefficients for speed prediction (m/s)
+        # Based on research and established sport science indices
+        speed_conversion_indices = {
+            # Horizontal jumping tests (predict horizontal velocity)
+            'skok v daljino z mesta': {
+                'coefficient': 0.42,  # Distance (m) × 0.42 ≈ horizontal takeoff velocity (m/s)
+                'formula': 'sqrt(distance * 9.81 / sin(45°))',  # Projectile motion
+                'unit_conversion': 'm/s'
+            },
+            'troskok iz sonožnega odriva': {
+                'coefficient': 0.35,  # Triple jump has different biomechanics
+                'formula': 'distance * 0.35',
+                'unit_conversion': 'm/s'
+            },
+            
+            # Sprint tests (direct time to speed conversion)
+            'šprint letečih 20m': {
+                'coefficient': 20.0,  # 20m / time = speed
+                'formula': '20 / time',
+                'unit_conversion': 'm/s'
+            },
+            'štart iz bloka 20 m': {
+                'coefficient': 20.0,  # 20m / time = speed
+                'formula': '20 / time', 
+                'unit_conversion': 'm/s'
+            },
+            
+            # Vertical jumping (can estimate power but not direct speed)
+            'skok iz čepa': {
+                'coefficient': 4.9,  # Height (m) × 4.9 ≈ takeoff velocity
+                'formula': 'sqrt(2 * 9.81 * height)',
+                'unit_conversion': 'm/s'
+            },
+            'globinski skok': {
+                'coefficient': 4.9,
+                'formula': 'sqrt(2 * 9.81 * height)',
+                'unit_conversion': 'm/s'
+            }
+        }
+        
+        def convert_to_speed_index(exercise_name, measure, unit):
+            """Convert exercise result to predicted speed using biomechanical indices"""
+            exercise_key = None
+            for key in speed_conversion_indices.keys():
+                if key.lower() in exercise_name.lower():
+                    exercise_key = key
+                    break
+            
+            if not exercise_key:
+                # Unknown exercise, try to categorize
+                if any(word in exercise_name.lower() for word in ['skok', 'jump']):
+                    if 'daljina' in exercise_name.lower() or 'horizontal' in exercise_name.lower():
+                        exercise_key = 'skok v daljino z mesta'
+                    else:
+                        exercise_key = 'skok iz čepa'
+                elif any(word in exercise_name.lower() for word in ['šprint', 'sprint', 'štart']):
+                    exercise_key = 'šprint letečih 20m'
+                else:
+                    return measure, unit  # No conversion possible
+            
+            conversion = speed_conversion_indices[exercise_key]
+            
+            try:
+                if 'time' in unit.lower() or 'sec' in unit.lower():
+                    # Time-based exercises (sprints)
+                    if 'šprint' in exercise_key or 'štart' in exercise_key:
+                        speed_ms = conversion['coefficient'] / measure
+                        return speed_ms, 'm/s'
+                    
+                elif any(dist_unit in unit.lower() for dist_unit in ['m', 'cm', 'meter']):
+                    # Distance-based exercises (jumps)
+                    if unit.lower() == 'cm':
+                        measure_m = measure / 100.0  # Convert cm to m
+                    else:
+                        measure_m = measure
+                    
+                    if 'daljina' in exercise_key or 'troskok' in exercise_key:
+                        # Horizontal jumps - estimate horizontal velocity
+                        speed_ms = measure_m * conversion['coefficient']
+                        return speed_ms, 'm/s'
+                    else:
+                        # Vertical jumps - estimate takeoff velocity
+                        import math
+                        speed_ms = math.sqrt(2 * 9.81 * measure_m)
+                        return speed_ms, 'm/s'
+                        
+                else:
+                    # Unknown unit, return as is
+                    return measure, unit
+                    
+            except (ZeroDivisionError, ValueError, TypeError):
+                return measure, unit
+        
+        def normalize_by_motor_ability(motor_ability, measure, unit, exercise_name):
+            """Apply normalization specific to each motor ability with speed indices"""
+            
+            if motor_ability.lower() == 'hitrost':
+                # For Hitrost: convert to predicted speed (m/s) using biomechanical indices
+                speed_value, speed_unit = convert_to_speed_index(exercise_name, measure, unit)
+                
+                # Additional biomechanical scaling based on exercise type
+                if 'frekvenca' in exercise_name.lower():
+                    # Step frequency component - higher frequency = better
+                    normalized_value = speed_value
+                    normalized_unit = speed_unit
+                elif 'odriv' in exercise_name.lower():
+                    # Step power component - more power = better
+                    normalized_value = speed_value
+                    normalized_unit = speed_unit
+                else:
+                    # General speed exercise
+                    normalized_value = speed_value
+                    normalized_unit = speed_unit
+                    
+            elif motor_ability.lower() == 'moč':
+                # Power exercises: normalize by body mass^0.67 or use raw values for jumps
+                reference_body_mass = 75.0
+                
+                if any(jump_word in exercise_name.lower() for jump_word in ['skok', 'jump']):
+                    # Jumping exercises: convert to power index or keep raw
+                    if any(dist_unit in unit.lower() for dist_unit in ['m', 'cm']):
+                        # Distance-based jumps: estimate power
+                        if unit.lower() == 'cm':
+                            distance_m = measure / 100.0
+                        else:
+                            distance_m = measure
+                        # Power index: distance × body_weight × g / time²
+                        # Simplified: use distance as power indicator
+                        normalized_value = distance_m * reference_body_mass
+                        normalized_unit = "power_index"
+                    else:
+                        normalized_value = measure
+                        normalized_unit = unit
+                else:
+                    # Strength exercises: allometric scaling
+                    normalized_value = measure / (reference_body_mass ** 0.67)
+                    normalized_unit = f"{unit}/kg^0.67"
+                    
+            elif motor_ability.lower() == 'vzdržljivost':
+                # Endurance: convert time to performance score
+                if any(time_unit in unit.lower() for time_unit in ['sec', 'min', 'time']):
+                    normalized_value = 1000 / measure if measure > 0 else 0
+                    normalized_unit = "endurance_score"
+                else:
+                    normalized_value = measure
+                    normalized_unit = unit
+                    
+            elif motor_ability.lower() == 'gibljivost':
+                # Flexibility: use raw values
+                normalized_value = measure
+                normalized_unit = unit
+                
+            elif motor_ability.lower() == 'koordinacija':
+                # Coordination: depends on measure type
+                if any(time_unit in unit.lower() for time_unit in ['sec', 'time']):
+                    normalized_value = 100 / measure if measure > 0 else 0
+                    normalized_unit = "coordination_score"
+                elif 'error' in unit.lower():
+                    normalized_value = 100 - measure if measure < 100 else 0
+                    normalized_unit = "coordination_score"
+                else:
+                    normalized_value = measure
+                    normalized_unit = unit
+                    
+            else:
+                # Unknown motor ability
+                normalized_value = measure
+                normalized_unit = unit
+            
+            return normalized_value, normalized_unit
+        
+        # Group by motor ability
+        motor_ability_groups = {}
+        for item in motor_abilities_data:
+            motor_ability = item['motor_ability']
+            if motor_ability not in motor_ability_groups:
+                motor_ability_groups[motor_ability] = []
+            motor_ability_groups[motor_ability].append(item)
+        
+        normalized_results = []
+        
+        for motor_ability, exercises in motor_ability_groups.items():
+            normalized_values = []
+            units = []
+            
+            for exercise in exercises:
+                exercise_name = exercise.get('exercise_name', '')
+                measure = float(exercise['measure'])
+                unit = exercise['unit']
+                
+                # Apply motor ability specific normalization with biomechanical indices
+                normalized_value, normalized_unit = normalize_by_motor_ability(
+                    motor_ability, measure, unit, exercise_name
+                )
+                
+                normalized_values.append(normalized_value)
+                units.append(normalized_unit)
+            
+            if normalized_values:
+                # Calculate representative value
+                if motor_ability.lower() == 'hitrost':
+                    # For speed: higher m/s = better performance
+                    representative_value = sum(normalized_values) / len(normalized_values)
+                    precision = 2
+                elif motor_ability.lower() == 'moč':
+                    # For power: higher values = better
+                    representative_value = sum(normalized_values) / len(normalized_values)
+                    precision = 2
+                else:
+                    representative_value = sum(normalized_values) / len(normalized_values)
+                    precision = 1
+                
+                most_common_unit = max(set(units), key=units.count) if units else 'units'
+                
+                normalized_results.append({
+                    'motor_ability': motor_ability,
+                    'measure': round(representative_value, precision),
+                    'unit': most_common_unit,
+                    'exercise_count': len(exercises)
+                })
+        
+        return normalized_results
+    
+    @staticmethod
+    def get_motor_ability_analytics(athlete_id):
+        """Get normalized motor ability analytics for athlete (all trainers)"""
+        try:
+            connection = db_manager.get_connection()
+            cursor = connection.cursor()
+            
+            log_with_unicode(f"✓ Getting motor ability analytics for athlete {athlete_id}")
+            
+            # Get all tests for this athlete from all trainers, sorted by test_date
+            # Convert string date to proper DATE for ordering, then format for output
+            all_tests_query = """
+                SELECT 
+                    id, 
+                    TO_CHAR(TO_DATE(test_date, 'DD-MON-RR'), 'YYYY-MM-DD') as formatted_date
+                FROM tests
+                WHERE athlete_id = :1
+                ORDER BY TO_DATE(test_date, 'DD-MON-RR') ASC, id ASC
+            """
+            
+            cursor.execute(all_tests_query, [athlete_id])
+            tests_data = cursor.fetchall()
+            
+            log_with_unicode(f"✓ Najdenih {len(tests_data)} testov za športnika {athlete_id}")
+            
+            tests = []
+            for test_data in tests_data:
+                current_test_id = test_data[0]
+                current_test_date = test_data[1]  # Already formatted as YYYY-MM-DD
+                
+                # Get motor abilities with exercise names for proper normalization
+                motor_abilities_query = """
+                    SELECT 
+                        ma.motor_ability,
+                        et.measure,
+                        et.unit,
+                        e.exercise as exercise_name
+                    FROM exercises_tests et
+                    JOIN exercises e ON et.exercise_id = e.id
+                    JOIN methods m ON e.method_id = m.id
+                    JOIN motor_abilities ma ON m.motor_ability_id = ma.id
+                    WHERE et.test_id = :1
+                    ORDER BY ma.motor_ability, e.exercise
+                """
+                
+                cursor.execute(motor_abilities_query, [current_test_id])
+                motor_abilities_data = cursor.fetchall()
+                
+                # Convert to list of dictionaries
+                raw_data = []
+                for row in motor_abilities_data:
+                    raw_data.append({
+                        'motor_ability': row[0],
+                        'measure': row[1],
+                        'unit': row[2],
+                        'exercise_name': row[3]
+                    })
+                
+                # Apply Slovenian motor ability normalization
+                normalized_motor_abilities = AthleteManager.normalize_motor_ability_values(raw_data)
+                
+                test_obj = {
+                    'id': current_test_id,
+                    'test_date': current_test_date,
+                    'motor_abilities': normalized_motor_abilities
+                }
+                tests.append(test_obj)
+            
+            cursor.close()
+            connection.close()
+            
+            result = {
+                'athlete_id': athlete_id,
+                'total_tests': len(tests),
+                'tests': tests
+            }
+            
+            log_with_unicode(f"✓ Normalizirana analitika motoričnih sposobnosti pripravljena za {len(tests)} testov")
+            return result
+            
+        except Exception as e:
+            log_with_unicode(f"✗ Napaka pri pridobivanju analitike motoričnih sposobnosti za športnika {athlete_id}: {e}")
+            raise Exception(f"Napaka pri pridobivanju analitike motoričnih sposobnosti: {str(e)}")

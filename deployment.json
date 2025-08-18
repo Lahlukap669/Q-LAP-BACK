@@ -1,0 +1,12 @@
+{
+  "routes": [
+    {
+      "path": "/{path*}",
+      "methods": ["ANY"],
+      "backend": {
+        "type": "HTTP_BACKEND",
+        "url": "http://YOUR-PRIVATE-IP:5000/api/{path}"
+      }
+    }
+  ]
+}
