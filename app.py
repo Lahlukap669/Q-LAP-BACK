@@ -1244,38 +1244,7 @@ class TrainerGetMotorAbilityAnalytics(Resource):
                 }, 500)
 
 
-@user_ns.route('/users/athlete/get-test-exercises')
-class TrainerGetTestExercises(Resource):
-    @auth_ns.doc(security='Bearer')
-    @auth_ns.response(200, 'Testne vaje uspešno pridobljene', test_exercises_list_model)
-    @auth_ns.response(401, 'Žeton je obvezen')
-    @auth_ns.response(403, 'Samo trenerji imajo dostop')
-    @role_required(TRAINER)
-    def get(self):
-        """Pridobi vse testne vaje razvrščene po motoričnih sposobnostih in skupinah metod"""
-        try:
-            # Get structured test exercises
-            structured_exercises = TrainerManager.get_test_exercises()
-            
-            # Count total exercises
-            total_exercises = 0
-            for motor_ability in structured_exercises:
-                for method_group in motor_ability['method_groups']:
-                    total_exercises += len(method_group['exercises'])
-            
-            return create_json_response(app, {
-                'message': 'Testne vaje uspešno pridobljene',
-                'data': structured_exercises,
-                'total_exercises': total_exercises
-            }, 200)
-            
-        except Exception as e:
-            log_with_unicode(f"✗ Napaka pri pridobivanju testnih vaj: {e}")
-            return create_json_response(app, {
-                'message': 'Napaka pri pridobivanju testnih vaj'
-            }, 500)
-
-@user_ns.route('/users/trainer/get-test-exercises')
+@user_ns.route('/trainer/get-test-exercises')
 class TrainerGetTestExercises(Resource):
     @auth_ns.doc(security='Bearer')
     @auth_ns.response(200, 'Testne vaje uspešno pridobljene', test_exercises_list_model)

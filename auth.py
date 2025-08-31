@@ -621,8 +621,8 @@ class TrainerManager:
                 FROM tests
                 WHERE trainer_id = :1 
                   AND athlete_id = :2
-                  AND TO_DATE(test_date, 'DD-MON-RR') >= TO_DATE(:3, 'YYYY-MM-DD') - INTERVAL '2' MONTH
-                  AND TO_DATE(test_date, 'DD-MON-RR') < TO_DATE(:4, 'YYYY-MM-DD')
+                  AND TO_DATE(test_date,'DD-MON-RR') >= ADD_MONTHS(TO_DATE(:3,'YYYY-MM-DD'), -2)
+                  AND TO_DATE(test_date,'DD-MON-RR') < TO_DATE(:3,'YYYY-MM-DD')
                 ORDER BY TO_DATE(test_date, 'DD-MON-RR') DESC, id DESC
             """
             
