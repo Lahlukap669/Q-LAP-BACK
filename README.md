@@ -1,14 +1,14 @@
 # Q-LAP-BACK
 
 ## Quick start
--Clone the repository and change into the project directory.
--Create and activate a Python virtual environment.
--Install dependencies from requirements.txt.
--Configure environment variables if needed, then run the Flask app.
+- Clone the repository and change into the project directory.
+- Create and activate a Python virtual environment.
+- Install dependencies from requirements.txt.
+- Configure environment variables if needed, then run the Flask app.
 
 ## Prerequisites
--Python 3.9+ installed on the machine and added to path.
--Git installed (optional).
+- Python 3.9+ installed on the machine and added to path.
+- Git installed (optional).
 
 
 
